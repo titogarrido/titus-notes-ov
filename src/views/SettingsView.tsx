@@ -2,7 +2,6 @@ import React, { useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
 import {
   Settings,
-  RefreshCw,
   Database as DbIcon,
   Info,
   FolderOpen,
@@ -19,10 +18,14 @@ import {
   ArchiveRestore,
   Loader2,
   UserCircle,
+  ArrowUpCircle,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { save as dialogSave, open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { check as checkUpdate, Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { OllamaSettings, SummaryTemplate, ImportedHyprnoteSession, UserProfile } from "../types";
 import { pingOllama } from "../lib/ollama";
@@ -45,6 +48,8 @@ export const SettingsView: React.FC = () => {
     upsertNotes,
     reloadDb,
     updateProfile,
+    dataRoot,
+    setDataRoot,
   } = useApp();
 
   const settings = db.settings || DEFAULT_SETTINGS;
@@ -251,7 +256,7 @@ export const SettingsView: React.FC = () => {
     try {
       const today = new Date().toISOString().slice(0, 10);
       const dest = await dialogSave({
-        defaultPath: `notes-gr-backup-${today}.zip`,
+        defaultPath: `titus-notes-backup-${today}.zip`,
         filters: [{ name: "Backup", extensions: ["zip"] }],
       });
       if (!dest) {
@@ -290,15 +295,127 @@ export const SettingsView: React.FC = () => {
     }
   };
 
-  // ---- Reset database ----
-  const [resetOpen, setResetOpen] = useState(false);
-
   const handleRevealInFinder = async () => {
     try {
       const dir = await invoke<string>("get_db_dir");
       await revealItemInDir(dir + "/db.json");
     } catch (err) {
       console.error("Failed to reveal in Finder:", err);
+    }
+  };
+
+  // ---- Data root (custom DB location) ----
+  const [dataRootStatus, setDataRootStatus] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ok"; info: { current: string; isCustom: boolean } }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const [pendingNewRoot, setPendingNewRoot] = useState<string | null>(null);
+  const [rootMigrate, setRootMigrate] = useState<boolean>(true);
+  const [rootConfirmOpen, setRootConfirmOpen] = useState(false);
+  const [resetRootConfirmOpen, setResetRootConfirmOpen] = useState(false);
+
+  const handlePickDataRoot = async () => {
+    const picked = await dialogOpen({
+      directory: true,
+      multiple: false,
+      title: "Escolher pasta para o banco de dados",
+    });
+    if (!picked || Array.isArray(picked)) return;
+    setPendingNewRoot(picked);
+    setRootMigrate(true);
+    setRootConfirmOpen(true);
+  };
+
+  const handleConfirmChangeRoot = async () => {
+    if (!pendingNewRoot) return;
+    setRootConfirmOpen(false);
+    setDataRootStatus({ kind: "loading" });
+    try {
+      const info = await setDataRoot(pendingNewRoot, rootMigrate);
+      setDataRootStatus({ kind: "ok", info });
+      setTimeout(() => setDataRootStatus({ kind: "idle" }), 2500);
+    } catch (e: any) {
+      setDataRootStatus({ kind: "error", message: e?.message || String(e) });
+    } finally {
+      setPendingNewRoot(null);
+    }
+  };
+
+  // ---- Updater ----
+  const [appVersion, setAppVersion] = useState<string>("");
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
+  const [updateStatus, setUpdateStatus] = useState<
+    | { kind: "idle" }
+    | { kind: "checking" }
+    | { kind: "uptodate" }
+    | { kind: "available"; version: string; notes?: string; pending: Update }
+    | { kind: "downloading"; progress: number; total: number; version: string }
+    | { kind: "ready"; version: string }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  const handleCheckUpdate = async () => {
+    setUpdateStatus({ kind: "checking" });
+    try {
+      const update = await checkUpdate();
+      if (!update) {
+        setUpdateStatus({ kind: "uptodate" });
+        return;
+      }
+      setUpdateStatus({
+        kind: "available",
+        version: update.version,
+        notes: update.body,
+        pending: update,
+      });
+    } catch (e: any) {
+      setUpdateStatus({ kind: "error", message: e?.message || String(e) });
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    if (updateStatus.kind !== "available") return;
+    const update = updateStatus.pending;
+    let received = 0;
+    let total = 0;
+    setUpdateStatus({ kind: "downloading", progress: 0, total: 0, version: update.version });
+    try {
+      await update.downloadAndInstall((evt) => {
+        if (evt.event === "Started") {
+          total = evt.data.contentLength || 0;
+          setUpdateStatus({ kind: "downloading", progress: 0, total, version: update.version });
+        } else if (evt.event === "Progress") {
+          received += evt.data.chunkLength;
+          setUpdateStatus({
+            kind: "downloading",
+            progress: received,
+            total,
+            version: update.version,
+          });
+        } else if (evt.event === "Finished") {
+          setUpdateStatus({ kind: "ready", version: update.version });
+        }
+      });
+      await relaunch();
+    } catch (e: any) {
+      setUpdateStatus({ kind: "error", message: e?.message || String(e) });
+    }
+  };
+
+  const handleConfirmResetRoot = async () => {
+    setResetRootConfirmOpen(false);
+    setDataRootStatus({ kind: "loading" });
+    try {
+      const info = await setDataRoot(null, false);
+      setDataRootStatus({ kind: "ok", info });
+      setTimeout(() => setDataRootStatus({ kind: "idle" }), 2500);
+    } catch (e: any) {
+      setDataRootStatus({ kind: "error", message: e?.message || String(e) });
     }
   };
 
@@ -639,15 +756,87 @@ export const SettingsView: React.FC = () => {
           )}
         </div>
 
+        {/* Updates */}
+        <div className="settings-card">
+          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
+            <ArrowUpCircle size={16} />
+            <span>Atualizações</span>
+          </h2>
+          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "14px" }}>
+            Verifique se há uma nova versão publicada no GitHub Releases.
+          </p>
+
+          <div className="settings-row">
+            <div className="settings-text-block">
+              <span className="settings-title">Versão atual: {appVersion || "—"}</span>
+              <span className="settings-desc">
+                {updateStatus.kind === "idle" && "Clique para verificar."}
+                {updateStatus.kind === "checking" && "Verificando..."}
+                {updateStatus.kind === "uptodate" && "Você está com a versão mais recente."}
+                {updateStatus.kind === "available" && `Nova versão disponível: ${updateStatus.version}`}
+                {updateStatus.kind === "downloading" &&
+                  (updateStatus.total > 0
+                    ? `Baixando ${updateStatus.version}: ${Math.round((updateStatus.progress / updateStatus.total) * 100)}%`
+                    : `Baixando ${updateStatus.version}...`)}
+                {updateStatus.kind === "ready" && "Instalando e reiniciando..."}
+                {updateStatus.kind === "error" && updateStatus.message}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              {updateStatus.kind === "available" ? (
+                <button
+                  className="btn-primary"
+                  onClick={handleInstallUpdate}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+                >
+                  <Download size={14} />
+                  <span>Baixar e instalar</span>
+                </button>
+              ) : (
+                <button
+                  className="btn-secondary"
+                  onClick={handleCheckUpdate}
+                  disabled={updateStatus.kind === "checking" || updateStatus.kind === "downloading"}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+                >
+                  {(updateStatus.kind === "checking" || updateStatus.kind === "downloading") ? (
+                    <Loader2 size={14} className="spin" />
+                  ) : (
+                    <ArrowUpCircle size={14} />
+                  )}
+                  <span>Verificar atualizações</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {updateStatus.kind === "available" && updateStatus.notes && (
+            <div
+              style={{
+                marginTop: "12px",
+                padding: "10px 12px",
+                background: "var(--bg-sidebar)",
+                borderRadius: "8px",
+                fontSize: "12px",
+                whiteSpace: "pre-wrap",
+                maxHeight: 200,
+                overflowY: "auto",
+              }}
+            >
+              {updateStatus.notes}
+            </div>
+          )}
+        </div>
+
         {/* About */}
         <div className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
             <Info size={16} />
-            <span>Sobre o notes-gr</span>
+            <span>Sobre o Titus Notes</span>
           </h2>
           <p style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--color-text-muted)" }}>
-            O <strong>notes-gr</strong> é um organizador pessoal e gerenciador de reuniões profissional, autocontido, mono-usuário e 100% offline.
-            Desenvolvido com <strong>Tauri v2 + Rust</strong> e interface <strong>React</strong>.
+            O <strong>Titus Notes</strong> é um organizador pessoal e gerenciador de reuniões profissional, autocontido, mono-usuário e 100% offline.
+            Versão <strong>{appVersion || "—"}</strong>. Desenvolvido com <strong>Tauri v2 + Rust</strong> e interface <strong>React</strong>.
           </p>
         </div>
 
@@ -660,17 +849,65 @@ export const SettingsView: React.FC = () => {
 
           <div style={{ display: "flex", flexDirection: "column", gap: "12px", fontSize: "13px" }}>
             <div className="settings-row" style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "10px" }}>
-              <div className="settings-text-block">
-                <span className="settings-title">Localização dos Arquivos:</span>
-                <span style={{ fontFamily: "monospace", fontSize: "11px", background: "var(--bg-sidebar)", padding: "4px 8px", borderRadius: "4px" }}>
-                  ~/Library/Application Support/com.notes-gr.app/db.json
+              <div className="settings-text-block" style={{ minWidth: 0, flex: 1 }}>
+                <span className="settings-title">
+                  Localização dos arquivos{dataRoot?.isCustom && " (personalizada)"}:
                 </span>
+                <span style={{ fontFamily: "monospace", fontSize: "11px", background: "var(--bg-sidebar)", padding: "4px 8px", borderRadius: "4px", wordBreak: "break-all" }}>
+                  {dataRoot?.current ? `${dataRoot.current}/db.json` : "—"}
+                </span>
+                {dataRoot?.isCustom && (
+                  <span className="settings-desc" style={{ marginTop: 4 }}>
+                    Padrão: <code style={{ fontSize: 11 }}>{dataRoot.default}</code>
+                  </span>
+                )}
               </div>
               <button className="btn-secondary" onClick={handleRevealInFinder} style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}>
                 <FolderOpen size={14} />
                 <span>Ver no Finder</span>
               </button>
             </div>
+
+            <div className="settings-row" style={{ borderBottom: "1px solid var(--border-color)", paddingBottom: "10px" }}>
+              <div className="settings-text-block">
+                <span className="settings-title">Alterar pasta</span>
+                <span className="settings-desc">
+                  Escolha uma pasta personalizada (ex: iCloud, Dropbox) para armazenar o banco e os arquivos.
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                {dataRoot?.isCustom && (
+                  <button
+                    className="btn-secondary"
+                    onClick={() => setResetRootConfirmOpen(true)}
+                    disabled={dataRootStatus.kind === "loading"}
+                    style={{ whiteSpace: "nowrap" }}
+                  >
+                    Restaurar padrão
+                  </button>
+                )}
+                <button
+                  className="btn-primary"
+                  onClick={handlePickDataRoot}
+                  disabled={dataRootStatus.kind === "loading"}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+                >
+                  {dataRootStatus.kind === "loading" ? <Loader2 size={14} className="spin" /> : <FolderOpen size={14} />}
+                  <span>{dataRootStatus.kind === "loading" ? "Aplicando..." : "Escolher pasta..."}</span>
+                </button>
+              </div>
+            </div>
+
+            {dataRootStatus.kind === "ok" && (
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1f8e3d" }}>
+                <CheckCircle2 size={14} /> Pasta atualizada: <code style={{ fontSize: 11 }}>{dataRootStatus.info.current}</code>
+              </div>
+            )}
+            {dataRootStatus.kind === "error" && (
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#cf222e" }}>
+                <AlertCircle size={14} /> {dataRootStatus.message}
+              </div>
+            )}
 
             <div className="settings-row" style={{ paddingTop: "6px" }}>
               <div className="settings-text-block">
@@ -755,22 +992,6 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Reset */}
-        <div className="settings-card" style={{ borderColor: "#cf222e22" }}>
-          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px", color: "#cf222e" }}>
-            <RefreshCw size={16} />
-            <span>Zona de Perigo</span>
-          </h2>
-          <div className="settings-row">
-            <div className="settings-text-block">
-              <span className="settings-title" style={{ color: "#cf222e" }}>Restaurar Banco de Dados</span>
-              <span className="settings-desc">Como restaurar o banco demonstrativo de fábrica</span>
-            </div>
-            <button className="btn-secondary" style={{ color: "#cf222e", borderColor: "#cf222e55" }} onClick={() => setResetOpen(true)}>
-              Como Resetar
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* Template editor modal */}
@@ -808,6 +1029,57 @@ export const SettingsView: React.FC = () => {
       `}</style>
 
       <ConfirmDialog
+        open={rootConfirmOpen}
+        title="Alterar pasta do banco de dados?"
+        message={
+          <>
+            Nova pasta:
+            {pendingNewRoot && (
+              <div style={{ marginTop: 6, marginBottom: 10, fontFamily: "monospace", fontSize: "11px", color: "var(--color-text-muted)", wordBreak: "break-all" }}>
+                {pendingNewRoot}
+              </div>
+            )}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, marginTop: 8 }}>
+              <input
+                type="checkbox"
+                checked={rootMigrate}
+                onChange={(e) => setRootMigrate(e.target.checked)}
+              />
+              <span>Copiar dados atuais (<code>db.json</code> + <code>files/</code>) para a nova pasta</span>
+            </label>
+            <div style={{ marginTop: 8, fontSize: 12, color: "var(--color-text-muted)" }}>
+              {rootMigrate
+                ? "Se a nova pasta já tiver db.json, ele será sobrescrito."
+                : "Os dados atuais permanecem na pasta anterior. Se a nova pasta estiver vazia, dados padrão serão recriados."}
+            </div>
+          </>
+        }
+        confirmLabel="Aplicar"
+        onConfirm={handleConfirmChangeRoot}
+        onCancel={() => { setRootConfirmOpen(false); setPendingNewRoot(null); }}
+      />
+
+      <ConfirmDialog
+        open={resetRootConfirmOpen}
+        title="Restaurar pasta padrão?"
+        message={
+          <>
+            O app voltará a usar a pasta padrão. Os dados na pasta personalizada
+            <strong> não serão movidos</strong> — copie manualmente se quiser preservá-los.
+            {dataRoot?.default && (
+              <div style={{ marginTop: 8, fontFamily: "monospace", fontSize: 11, color: "var(--color-text-muted)" }}>
+                {dataRoot.default}
+              </div>
+            )}
+          </>
+        }
+        confirmLabel="Restaurar padrão"
+        danger
+        onConfirm={handleConfirmResetRoot}
+        onCancel={() => setResetRootConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
         open={restoreConfirmOpen}
         title="Restaurar backup?"
         message={
@@ -826,18 +1098,6 @@ export const SettingsView: React.FC = () => {
         onCancel={() => { setRestoreConfirmOpen(false); setPendingRestorePath(null); }}
       />
 
-      <ConfirmDialog
-        open={resetOpen}
-        title="Resetar banco de dados"
-        message={
-          <>
-            Para resetar, feche o app, exclua o arquivo <code>db.json</code> em <code>~/Library/Application Support/com.notes-gr.app/</code> e reabra. Os dados padrão serão recriados.
-          </>
-        }
-        confirmLabel="Entendi"
-        onConfirm={() => setResetOpen(false)}
-        onCancel={() => setResetOpen(false)}
-      />
     </div>
   );
 };
