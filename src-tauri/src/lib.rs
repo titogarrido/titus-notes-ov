@@ -1,0 +1,1067 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
+use tauri::{AppHandle, Manager};
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Person {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+    pub email: String,
+    pub department: String,
+    pub manager_id: Option<String>,
+    pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub company_id: Option<String>,
+    #[serde(default)]
+    pub is_contact: bool,
+    #[serde(default)]
+    pub ai_profile: Option<AIPersonProfile>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AIPersonProfile {
+    pub content: String,
+    pub generated_at: String,
+    pub model: String,
+    #[serde(default)]
+    pub source_note_count: u32,
+    #[serde(default)]
+    pub source_summary_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Company {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub r#type: String,
+    #[serde(default)]
+    pub sector: String,
+    #[serde(default)]
+    pub size_label: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub subtitle: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub people_ids: Vec<String>,
+    /// "em-andamento" | "quase-la" | "pausado" | "concluido" | "ideacao"
+    #[serde(default)]
+    pub status: String,
+    /// ISO timestamp da última atualização (mantido pelo frontend)
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub ai_summary: Option<AIProjectSummary>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AIProjectSummary {
+    pub content: String,
+    pub generated_at: String,
+    pub model: String,
+    #[serde(default)]
+    pub source_note_count: u32,
+    #[serde(default)]
+    pub source_summary_count: u32,
+    #[serde(default)]
+    pub source_task_count: u32,
+    #[serde(default)]
+    pub source_people_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    pub id: String,
+    pub template_id: Option<String>,
+    pub template_name: String,
+    pub content: String,
+    pub generated_at: String,
+    pub model: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub date: String,
+    pub project_id: Option<String>,
+    pub people_ids: Vec<String>,
+    #[serde(default)]
+    pub summaries: Vec<Summary>,
+    #[serde(default)]
+    pub transcript: String,
+    /// Nome do arquivo de áudio (relativo a files/audio/) — vazio se não houver
+    #[serde(default)]
+    pub audio_file: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Task {
+    pub id: String,
+    pub title: String,
+    pub completed: bool,
+    pub due_date: String,
+    pub project_id: Option<String>,
+    pub person_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UserProfile {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OllamaSettings {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub language: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryTemplate {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub sections: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Database {
+    pub people: Vec<Person>,
+    pub projects: Vec<Project>,
+    pub notes: Vec<Note>,
+    pub tasks: Vec<Task>,
+    #[serde(default)]
+    pub companies: Vec<Company>,
+    #[serde(default)]
+    pub settings: OllamaSettings,
+    #[serde(default)]
+    pub templates: Vec<SummaryTemplate>,
+    #[serde(default)]
+    pub hyprnote_path: String,
+    #[serde(default)]
+    pub profile: Option<UserProfile>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedHyprnoteSession {
+    pub folder_name: String,
+    pub meta_json: Option<String>,
+    pub memo_md: Option<String>,
+    pub transcript_json: Option<String>,
+    /// Lista de (nome_arquivo, conteúdo) dos arquivos .md que não começam com "_"
+    pub summary_files: Vec<(String, String)>,
+    /// Caminho absoluto para o arquivo de áudio da sessão (audio.mp3/wav/...) — se existir
+    pub audio_path: Option<String>,
+    /// Extensão (sem ponto) do áudio encontrado — útil pra montar o nome de destino
+    pub audio_ext: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfig {
+    #[serde(default)]
+    pub data_root: Option<String>,
+}
+
+fn get_default_data_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let path = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn get_app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let mut path = get_default_data_root(app)?;
+    path.push(".config.json");
+    Ok(path)
+}
+
+fn read_app_config(app: &AppHandle) -> AppConfig {
+    let cfg_path = match get_app_config_path(app) {
+        Ok(p) => p,
+        Err(_) => return AppConfig::default(),
+    };
+    if !cfg_path.exists() {
+        return AppConfig::default();
+    }
+    match fs::read_to_string(&cfg_path) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => AppConfig::default(),
+    }
+}
+
+fn write_app_config(app: &AppHandle, cfg: &AppConfig) -> Result<(), String> {
+    let cfg_path = get_app_config_path(app)?;
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    fs::write(cfg_path, json).map_err(|e| e.to_string())
+}
+
+fn get_data_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let cfg = read_app_config(app);
+    if let Some(custom) = cfg.data_root.as_ref().filter(|s| !s.trim().is_empty()) {
+        let p = PathBuf::from(custom);
+        fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        return Ok(p);
+    }
+    get_default_data_root(app)
+}
+
+fn get_db_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let mut path = get_data_root(app)?;
+    path.push("db.json");
+    Ok(path)
+}
+
+fn get_mock_database() -> Database {
+    let people = vec![
+        Person {
+            id: "person-tito".to_string(),
+            name: "Tito Garrido".to_string(),
+            role: "Account Technical Leader".to_string(),
+            email: "tito@ibm.com".to_string(),
+            department: "Arquitetura".to_string(),
+            manager_id: None,
+            avatar_url: None,
+            company_id: None,
+            is_contact: false,
+            ai_profile: None,
+        },
+        Person {
+            id: "person-daniela-roz".to_string(),
+            name: "Daniela Roz".to_string(),
+            role: "IT Head / CDO / Governança e Engenharia de Dados".to_string(),
+            email: "daniela.roz@santander.com".to_string(),
+            department: "Dados".to_string(),
+            manager_id: None,
+            avatar_url: Some("https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150".to_string()),
+            company_id: None,
+            is_contact: false,
+            ai_profile: None,
+        },
+        Person {
+            id: "person-diego".to_string(),
+            name: "Diego Maia".to_string(),
+            role: "Engineering Manager | Technical Lead | Platform Engineer".to_string(),
+            email: "diego.maia@santander.com".to_string(),
+            department: "Plataforma".to_string(),
+            manager_id: Some("person-daniela-roz".to_string()),
+            avatar_url: Some("https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150".to_string()),
+            company_id: None,
+            is_contact: false,
+            ai_profile: None,
+        },
+        Person {
+            id: "person-anderson".to_string(),
+            name: "Anderson Silva".to_string(),
+            role: "Head IT Infrastructure".to_string(),
+            email: "anderson.silva@santander.com".to_string(),
+            department: "Infraestrutura".to_string(),
+            manager_id: Some("person-daniela-roz".to_string()),
+            avatar_url: None,
+            company_id: None,
+            is_contact: false,
+            ai_profile: None,
+        },
+        Person {
+            id: "person-bruno".to_string(),
+            name: "Bruno Roquetti".to_string(),
+            role: "Sem cargo".to_string(),
+            email: "bruno.roquetti@santander.com".to_string(),
+            department: "Infraestrutura".to_string(),
+            manager_id: Some("person-anderson".to_string()),
+            avatar_url: None,
+            company_id: None,
+            is_contact: false,
+            ai_profile: None,
+        },
+        Person {
+            id: "person-daniela-d".to_string(),
+            name: "Daniela Domingos".to_string(),
+            role: "Sem cargo".to_string(),
+            email: "daniela.domingos@santander.com".to_string(),
+            department: "Operações".to_string(),
+            manager_id: Some("person-anderson".to_string()),
+            avatar_url: None,
+            company_id: None,
+            is_contact: false,
+            ai_profile: None,
+        },
+        Person {
+            id: "person-pierre".to_string(),
+            name: "Pierre".to_string(),
+            role: "IBM Data Specialist".to_string(),
+            email: "pierre@ibm.com".to_string(),
+            department: "Serviços".to_string(),
+            manager_id: Some("person-tito".to_string()),
+            avatar_url: None,
+            company_id: None,
+            is_contact: false,
+            ai_profile: None,
+        },
+        Person {
+            id: "person-sandim".to_string(),
+            name: "Sandim".to_string(),
+            role: "IBM Data Specialist for Mainframe".to_string(),
+            email: "sandim@ibm.com".to_string(),
+            department: "Serviços".to_string(),
+            manager_id: Some("person-tito".to_string()),
+            avatar_url: None,
+            company_id: None,
+            is_contact: false,
+            ai_profile: None,
+        },
+    ];
+
+    let projects = vec![
+        Project {
+            id: "project-watsonx".to_string(),
+            name: "Apresentações e Experimentações Watsonx".to_string(),
+            description: "# Apresentações e Experimentações Watsonx\n\nIniciativa conjunta entre o time do Santander e a IBM para explorar as capacidades da plataforma **Watsonx.ai** e **Watsonx.governance**.\n\n## Objetivos do Projeto\n- Validar modelos open-source (Llama-3) para processamento de documentos corporativos.\n- Desenvolver MVPs de extração de dados estruturados com SmartOCR.\n- Garantir compliance com a governança sob a coordenação de @Daniela Roz.\n\n## Membros Chave\n- @Tito Garrido (Coordenação e Arquitetura)\n- @Diego Maia (Infraestrutura de Plataforma)\n- @Anderson Silva (Operações e Redes)\n- @Pierre (Soluções de Inteligência Artificial)".to_string(),
+            people_ids: vec![
+                "person-tito".to_string(),
+                "person-daniela-roz".to_string(),
+                "person-diego".to_string(),
+                "person-anderson".to_string(),
+                "person-bruno".to_string(),
+                "person-daniela-d".to_string(),
+                "person-pierre".to_string(),
+            ],
+            status: "em-andamento".to_string(),
+            updated_at: String::new(),
+            ai_summary: None,
+        },
+        Project {
+            id: "project-linhagem".to_string(),
+            name: "Linhagem e Governança de Dados Mainframe".to_string(),
+            description: "# Linhagem e Governança de Dados Mainframe\n\nProjeto focado no mapeamento end-to-end de fluxos de dados originados em sistemas legados mainframe COBOL/DB2 do Santander.\n\n## Pauta e Requisitos\n- Realizar a extração automática de metadados de programas batch.\n- Integrar a linhagem visual no catálogo de governança corporativo.\n- Validar a segurança e conformidade dos fluxos mapeados.\n\n## Equipe Alocada\n- @Tito Garrido\n- @Pierre (Catalogação e Metadados)\n- @Sandim (Extração de Sistemas Legados)".to_string(),
+            people_ids: vec![
+                "person-tito".to_string(),
+                "person-pierre".to_string(),
+                "person-sandim".to_string(),
+            ],
+            status: "em-andamento".to_string(),
+            updated_at: String::new(),
+            ai_summary: None,
+        },
+        Project {
+            id: "project-watson-assistant".to_string(),
+            name: "Renovação Contratual Watson Assistant".to_string(),
+            description: "# Renovação Contratual Watson Assistant\n\nAlinhamento técnico e comercial das licenças de uso do Watson Assistant para os canais de atendimento digital do banco.\n\n## Tópicos\n- Estimativa de chamadas de API mensais.\n- Negociação de termos com a liderança de @Daniela Roz.\n- Planejamento de migração futura para arquiteturas híbridas.".to_string(),
+            people_ids: vec![
+                "person-tito".to_string(),
+                "person-daniela-roz".to_string(),
+            ],
+            status: "em-andamento".to_string(),
+            updated_at: String::new(),
+            ai_summary: None,
+        },
+    ];
+
+    let notes = vec![
+        Note {
+            id: "note-1".to_string(),
+            title: "[AIT/IBM] Apresentação SmartOCR (watsonx)".to_string(),
+            content: "# [AIT/IBM] Apresentação SmartOCR (watsonx)\n\n## Participantes\n- @Tito Garrido (IBM ATL)\n- @Pierre (IBM Specialist)\n- @Daniela Domingos (Santander Ops)\n- @Bruno Rodrigues Alcantara (Infra)\n- @Daniela Cunha Lima Domingos (Organizadora)\n\n## Pauta da Reunião\nApresentação da solução de SmartOCR integrada ao Watsonx para o processamento inteligente e automatizado de documentos em larga escala no Santander.\n\n## Principais Discussões\n- Demonstração do fluxo operacional de extração de dados com acurácia média de **98.2%**.\n- @Bruno Roquetti levantou dúvidas técnicas críticas sobre latência e volumetria de rede na comunicação com o Mainframe.\n- @Pierre explicou a arquitetura de cache em memória que propomos para neutralizar impactos de rede.\n- @Daniela Domingos levantou o fluxo de validação jurídica para compliance de privacidade de dados.\n\n## Próximos Passos (Ações)\n- [ ] @Pierre preparar o relatório técnico detalhando a arquitetura de rede e latências.\n- [ ] @Daniela Domingos validar as regras de LGPD com o departamento jurídico local.".to_string(),
+            date: "2026-05-13".to_string(),
+            project_id: Some("project-watsonx".to_string()),
+            people_ids: vec![
+                "person-tito".to_string(),
+                "person-bruno".to_string(),
+                "person-daniela-d".to_string(),
+                "person-pierre".to_string(),
+            ],
+            summaries: vec![],
+            transcript: String::new(),
+            audio_file: String::new(),
+        },
+        Note {
+            id: "note-2".to_string(),
+            title: "Experimentação Watson X - Kickoff".to_string(),
+            content: "# Experimentação Watson X - Kickoff\n\n## Participantes\n- @Tito Garrido\n- @Daniela Roz (IT Head / CDO)\n- @Diego Maia (Engineering Manager)\n- @Bruno Roquetti\n- Julian Springer (Santander)\n- Matheus Henrique Santos da Silva (Santander)\n\n## Alinhamento de Escopo\nReunião de início oficial para estruturar a experimentação prática da plataforma **Watsonx.ai** nos servidores locais e em nuvem do Santander.\n\n## Notas\n- @Daniela Roz reforçou que governança corporativa de dados e estrita segurança de dados são prioridades absolutas no projeto.\n- @Diego Maia sugeriu a criação de um namespace isolado dentro do cluster RedHat OpenShift do banco para garantir total isolamento.\n- @Tito Garrido comprometeu-se a guiar o time na aquisição de créditos na IBM Cloud e suporte especializado de laboratório.\n\n## Ações Definidas\n- [ ] @Tito Garrido solicitar ativação e créditos adicionais para o ambiente de sandbox.\n- [ ] @Diego Maia provisionar o namespace do OpenShift e configurar limites de CPU/Memória.".to_string(),
+            date: "2026-05-12".to_string(),
+            project_id: Some("project-watsonx".to_string()),
+            people_ids: vec![
+                "person-tito".to_string(),
+                "person-daniela-roz".to_string(),
+                "person-diego".to_string(),
+                "person-bruno".to_string(),
+            ],
+            summaries: vec![],
+            transcript: String::new(),
+            audio_file: String::new(),
+        },
+        Note {
+            id: "note-3".to_string(),
+            title: "Reunião Vanessa - Linhagem".to_string(),
+            content: "# Reunião Vanessa - Linhagem\n\n## Participantes\n- Pierre - IBM Data specialist\n- Sandim - IBM Data specialist for mainframe\n- @Tito Garrido - Account Technical Leader\n\n## Pauta\nEstruturação da modelagem e importação dos fluxos de dados de mainframe COBOL/JCL para o catálogo corporativo de governança.\n\n## Discussão\n- @Sandim descreveu a complexidade de mapear centenas de arquivos de dados indexados (VSAM) acoplados.\n- @Pierre propôs a criação de um parser estático preliminar para automatizar a leitura de blocos JCL.\n\n## Próximos Passos\n- [ ] @Sandim separar um conjunto amostral de arquivos de cópia COBOL (copybooks) para teste.\n- [ ] @Pierre programar o script inicial do parser estático de JCL.".to_string(),
+            date: "2026-05-06".to_string(),
+            project_id: Some("project-linhagem".to_string()),
+            people_ids: vec![
+                "person-tito".to_string(),
+                "person-pierre".to_string(),
+                "person-sandim".to_string(),
+            ],
+            summaries: vec![],
+            transcript: String::new(),
+            audio_file: String::new(),
+        },
+        Note {
+            id: "note-4".to_string(),
+            title: "Renovação do Contrato Watson Assistant Santander".to_string(),
+            content: "# Renovação do Contrato Watson Assistant Santander\n\nReunião comercial e de arquitetura para alinhar volumes de licenciamento de agentes virtuais cognitivos.\n\n## Status do Contrato\n- Negociação comercial em andamento direto com a diretoria.\n- Termos técnicos de suporte e SLA pré-aprovados pelo time de arquitetura liderado por @Tito Garrido.\n- Aguardando assinatura final sob supervisão de @Daniela Roz.\n\n## Ações\n- [ ] @Tito Garrido enviar a tabela de volumetria revisada para o time comercial da IBM.".to_string(),
+            date: "2026-05-04".to_string(),
+            project_id: Some("project-watson-assistant".to_string()),
+            people_ids: vec![
+                "person-tito".to_string(),
+                "person-daniela-roz".to_string(),
+            ],
+            summaries: vec![],
+            transcript: String::new(),
+            audio_file: String::new(),
+        },
+    ];
+
+    let tasks = vec![
+        Task {
+            id: "task-1".to_string(),
+            title: "Preparar relatório técnico de arquitetura de rede e latências".to_string(),
+            completed: false,
+            due_date: "2026-05-28".to_string(),
+            project_id: Some("project-watsonx".to_string()),
+            person_id: Some("person-pierre".to_string()),
+        },
+        Task {
+            id: "task-2".to_string(),
+            title: "Validar fluxo do SmartOCR com jurídico sobre LGPD".to_string(),
+            completed: false,
+            due_date: "2026-05-29".to_string(),
+            project_id: Some("project-watsonx".to_string()),
+            person_id: Some("person-daniela-d".to_string()),
+        },
+        Task {
+            id: "task-3".to_string(),
+            title: "Solicitar créditos e ativação do Watsonx Sandbox na IBM Cloud".to_string(),
+            completed: false,
+            due_date: "2026-05-25".to_string(),
+            project_id: Some("project-watsonx".to_string()),
+            person_id: Some("person-tito".to_string()),
+        },
+        Task {
+            id: "task-4".to_string(),
+            title: "Provisionar o namespace no cluster OpenShift do banco".to_string(),
+            completed: false,
+            due_date: "2026-05-27".to_string(),
+            project_id: Some("project-watsonx".to_string()),
+            person_id: Some("person-diego".to_string()),
+        },
+        Task {
+            id: "task-5".to_string(),
+            title: "Separar copybooks COBOL e JCL amostrais para análise".to_string(),
+            completed: false,
+            due_date: "2026-05-26".to_string(),
+            project_id: Some("project-linhagem".to_string()),
+            person_id: Some("person-sandim".to_string()),
+        },
+        Task {
+            id: "task-6".to_string(),
+            title: "Desenvolver script de parser inicial para JCL".to_string(),
+            completed: false,
+            due_date: "2026-05-30".to_string(),
+            project_id: Some("project-linhagem".to_string()),
+            person_id: Some("person-pierre".to_string()),
+        },
+        Task {
+            id: "task-7".to_string(),
+            title: "Enviar tabela de volumetria comercial Watson Assistant".to_string(),
+            completed: true,
+            due_date: "2026-05-20".to_string(),
+            project_id: Some("project-watson-assistant".to_string()),
+            person_id: Some("person-tito".to_string()),
+        },
+    ];
+
+    let settings = OllamaSettings {
+        url: "http://localhost:11434".to_string(),
+        model: "llama3.2".to_string(),
+        language: "pt-BR".to_string(),
+    };
+
+    let templates = vec![
+        SummaryTemplate {
+            id: "tpl-default".to_string(),
+            name: "Sumário Executivo".to_string(),
+            description: "Resumo geral de reuniões".to_string(),
+            sections: vec![
+                "Resumo".to_string(),
+                "Pontos-chave".to_string(),
+                "Próximos passos".to_string(),
+            ],
+        },
+    ];
+
+    Database {
+        people,
+        projects,
+        notes,
+        tasks,
+        companies: Vec::new(),
+        settings,
+        templates,
+        hyprnote_path: String::new(),
+        profile: None,
+    }
+}
+
+#[tauri::command]
+fn load_db(app: AppHandle) -> Result<Database, String> {
+    let db_path = get_db_path(&app)?;
+    if !db_path.exists() {
+        let initial_db = get_mock_database();
+        let json = serde_json::to_string_pretty(&initial_db).map_err(|e| e.to_string())?;
+        fs::write(&db_path, json).map_err(|e| e.to_string())?;
+        return Ok(initial_db);
+    }
+    let content = fs::read_to_string(&db_path).map_err(|e| e.to_string())?;
+    let db: Database = match serde_json::from_str(&content) {
+        Ok(db) => db,
+        Err(_) => {
+            // Backup corrupted db and recreate
+            let backup_path = db_path.with_extension("json.bak");
+            let _ = fs::copy(&db_path, backup_path);
+            let initial_db = get_mock_database();
+            if let Ok(json) = serde_json::to_string_pretty(&initial_db) {
+                let _ = fs::write(&db_path, json);
+            }
+            initial_db
+        }
+    };
+    Ok(db)
+}
+
+#[tauri::command]
+fn save_db(app: AppHandle, data: Database) -> Result<(), String> {
+    let db_path = get_db_path(&app)?;
+    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+    fs::write(db_path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_db_dir(app: AppHandle) -> Result<String, String> {
+    let path = get_data_root(&app)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+fn get_files_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let mut path = get_data_root(app)?;
+    path.push("files");
+    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn get_audio_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let mut path = get_data_root(app)?;
+    path.push("files");
+    path.push("audio");
+    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn is_safe_filename(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+        && !name.starts_with('.')
+}
+
+#[tauri::command]
+fn save_image(app: AppHandle, data: Vec<u8>, ext: String) -> Result<String, String> {
+    let files_dir = get_files_dir(&app)?;
+
+    let safe_ext: String = ext
+        .trim_start_matches('.')
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let safe_ext = if safe_ext.is_empty() {
+        "png".to_string()
+    } else {
+        safe_ext.to_lowercase()
+    };
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let filename = format!("img-{}.{}", nanos, safe_ext);
+
+    let mut file_path = files_dir;
+    file_path.push(&filename);
+    fs::write(&file_path, &data).map_err(|e| e.to_string())?;
+
+    Ok(filename)
+}
+
+#[tauri::command]
+fn read_image(app: AppHandle, filename: String) -> Result<Vec<u8>, String> {
+    if !is_safe_filename(&filename) {
+        return Err("Invalid filename".to_string());
+    }
+    let mut file_path = get_files_dir(&app)?;
+    file_path.push(&filename);
+    fs::read(&file_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_import_log(app: AppHandle, content: String) -> Result<String, String> {
+    let mut path = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    path.push("import.log");
+    // truncate + write — sempre reseta para evitar crescimento ilimitado
+    fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn scan_hyprnote_sessions(path: String) -> Result<Vec<ImportedHyprnoteSession>, String> {
+    let root = PathBuf::from(&path);
+    if !root.exists() {
+        return Err(format!("Pasta não existe: {}", path));
+    }
+    if !root.is_dir() {
+        return Err(format!("Caminho não é um diretório: {}", path));
+    }
+
+    let mut sessions: Vec<ImportedHyprnoteSession> = Vec::new();
+    let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // ignora pastas começadas em "." (hidden)
+        if folder_name.starts_with('.') {
+            continue;
+        }
+
+        let mut meta_json: Option<String> = None;
+        let mut memo_md: Option<String> = None;
+        let mut transcript_json: Option<String> = None;
+        let mut summary_files: Vec<(String, String)> = Vec::new();
+        let mut audio_path: Option<String> = None;
+        let mut audio_ext: Option<String> = None;
+
+        let inner = match fs::read_dir(&path) {
+            Ok(it) => it,
+            Err(_) => continue,
+        };
+        for inner_entry in inner {
+            let inner_entry = match inner_entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let inner_path = inner_entry.path();
+            if !inner_path.is_file() {
+                continue;
+            }
+            let fname = match inner_path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            match fname.as_str() {
+                "_meta.json" => {
+                    meta_json = fs::read_to_string(&inner_path).ok();
+                }
+                "_memo.md" => {
+                    memo_md = fs::read_to_string(&inner_path).ok();
+                }
+                "transcript.json" => {
+                    transcript_json = fs::read_to_string(&inner_path).ok();
+                }
+                _ => {
+                    let lower = fname.to_lowercase();
+                    // áudio da sessão (gravação) — preferimos audio.* mas aceitamos outros
+                    // áudios comuns caso o usuário tenha renomeado.
+                    let is_audio = (lower.starts_with("audio.")
+                        && (lower.ends_with(".mp3")
+                            || lower.ends_with(".wav")
+                            || lower.ends_with(".m4a")
+                            || lower.ends_with(".ogg")
+                            || lower.ends_with(".webm")
+                            || lower.ends_with(".flac")))
+                        && audio_path.is_none();
+                    if is_audio {
+                        let ext = lower.rsplit('.').next().unwrap_or("mp3").to_string();
+                        audio_ext = Some(ext);
+                        audio_path = Some(inner_path.to_string_lossy().to_string());
+                    } else if lower.ends_with(".md") && !fname.starts_with('_') {
+                        // qualquer outro arquivo .md que NÃO começa com '_' é considerado sumário
+                        if let Ok(content) = fs::read_to_string(&inner_path) {
+                            summary_files.push((fname, content));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Só inclui pasta que tenha pelo menos _meta.json OU _memo.md OU algum sumário
+        if meta_json.is_some()
+            || memo_md.is_some()
+            || !summary_files.is_empty()
+            || transcript_json.is_some()
+            || audio_path.is_some()
+        {
+            sessions.push(ImportedHyprnoteSession {
+                folder_name,
+                meta_json,
+                memo_md,
+                transcript_json,
+                summary_files,
+                audio_path,
+                audio_ext,
+            });
+        }
+    }
+
+    Ok(sessions)
+}
+
+#[tauri::command]
+fn import_audio_file(
+    app: AppHandle,
+    source_path: String,
+    dest_filename: String,
+) -> Result<String, String> {
+    if !is_safe_filename(&dest_filename) {
+        return Err("Invalid dest_filename".to_string());
+    }
+    let src = PathBuf::from(&source_path);
+    if !src.exists() || !src.is_file() {
+        return Err(format!("Áudio não encontrado: {}", source_path));
+    }
+    let audio_dir = get_audio_dir(&app)?;
+    let mut dest = audio_dir;
+    dest.push(&dest_filename);
+    fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    Ok(dest_filename)
+}
+
+#[tauri::command]
+fn get_audio_path(app: AppHandle, filename: String) -> Result<String, String> {
+    if !is_safe_filename(&filename) {
+        return Err("Invalid filename".to_string());
+    }
+    let mut file_path = get_audio_dir(&app)?;
+    file_path.push(&filename);
+    if !file_path.exists() {
+        return Err(format!("Áudio não encontrado: {}", filename));
+    }
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn read_audio(app: AppHandle, filename: String) -> Result<Vec<u8>, String> {
+    if !is_safe_filename(&filename) {
+        return Err("Invalid filename".to_string());
+    }
+    let mut file_path = get_audio_dir(&app)?;
+    file_path.push(&filename);
+    fs::read(&file_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_audios(app: AppHandle, filenames: Vec<String>) -> Result<(), String> {
+    let audio_dir = get_audio_dir(&app)?;
+    for filename in filenames {
+        if !is_safe_filename(&filename) {
+            continue;
+        }
+        let mut file_path = audio_dir.clone();
+        file_path.push(&filename);
+        let _ = fs::remove_file(&file_path);
+    }
+    Ok(())
+}
+
+fn zip_dir_recursive(
+    zip: &mut zip::ZipWriter<fs::File>,
+    dir: &PathBuf,
+    base: &PathBuf,
+    opts: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    use std::io::Write;
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let rel = path.strip_prefix(base).map_err(|e| e.to_string())?;
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if path.is_dir() {
+            zip.add_directory(format!("{}/", rel_str), opts)
+                .map_err(|e| e.to_string())?;
+            zip_dir_recursive(zip, &path, base, opts)?;
+        } else if path.is_file() {
+            zip.start_file(&rel_str, opts).map_err(|e| e.to_string())?;
+            let content = fs::read(&path).map_err(|e| e.to_string())?;
+            zip.write_all(&content).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn create_backup(app: AppHandle, dest_path: String) -> Result<(), String> {
+    use std::io::Write;
+    let data_root = get_data_root(&app)?;
+    let dest = PathBuf::from(&dest_path);
+    let file = fs::File::create(&dest).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let db_path = data_root.join("db.json");
+    if db_path.exists() {
+        zip.start_file("db.json", opts).map_err(|e| e.to_string())?;
+        let content = fs::read(&db_path).map_err(|e| e.to_string())?;
+        zip.write_all(&content).map_err(|e| e.to_string())?;
+    }
+
+    let files_dir = data_root.join("files");
+    if files_dir.exists() {
+        zip_dir_recursive(&mut zip, &files_dir, &data_root, opts)?;
+    }
+
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn restore_backup(app: AppHandle, backup_path: String) -> Result<(), String> {
+    let data_root = get_data_root(&app)?;
+    let src = PathBuf::from(&backup_path);
+    if !src.exists() {
+        return Err(format!("Arquivo não encontrado: {}", backup_path));
+    }
+    let file = fs::File::open(&src).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = entry.name().to_string();
+        let out_path = data_root.join(&name);
+        if !out_path.starts_with(&data_root) {
+            continue;
+        }
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut out_file = fs::File::create(&out_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out_file).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DataRootInfo {
+    pub current: String,
+    pub default: String,
+    pub is_custom: bool,
+}
+
+#[tauri::command]
+fn get_data_root_info(app: AppHandle) -> Result<DataRootInfo, String> {
+    let default = get_default_data_root(&app)?;
+    let current = get_data_root(&app)?;
+    let is_custom = current != default;
+    Ok(DataRootInfo {
+        current: current.to_string_lossy().to_string(),
+        default: default.to_string_lossy().to_string(),
+        is_custom,
+    })
+}
+
+fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if from.is_file() {
+            fs::copy(&from, &to).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_data_root(
+    app: AppHandle,
+    path: Option<String>,
+    migrate: bool,
+) -> Result<DataRootInfo, String> {
+    let source = get_data_root(&app)?;
+
+    let new_root: PathBuf = match &path {
+        Some(p) if !p.trim().is_empty() => {
+            let pb = PathBuf::from(p);
+            fs::create_dir_all(&pb).map_err(|e| e.to_string())?;
+            if !pb.is_dir() {
+                return Err(format!("Não é um diretório: {}", p));
+            }
+            pb
+        }
+        _ => get_default_data_root(&app)?,
+    };
+
+    if migrate && source != new_root {
+        let src_db = source.join("db.json");
+        if src_db.exists() {
+            fs::copy(&src_db, new_root.join("db.json")).map_err(|e| e.to_string())?;
+        }
+        let src_files = source.join("files");
+        if src_files.exists() {
+            copy_dir_recursive(&src_files, &new_root.join("files"))?;
+        }
+    }
+
+    let mut cfg = read_app_config(&app);
+    cfg.data_root = match &path {
+        Some(p) if !p.trim().is_empty() => Some(p.clone()),
+        _ => None,
+    };
+    write_app_config(&app, &cfg)?;
+
+    let audio_dir = new_root.join("files").join("audio");
+    let _ = fs::create_dir_all(&audio_dir);
+    let _ = app
+        .asset_protocol_scope()
+        .allow_directory(&audio_dir, true);
+
+    get_data_root_info(app)
+}
+
+#[tauri::command]
+fn delete_images(app: AppHandle, filenames: Vec<String>) -> Result<(), String> {
+    let files_dir = get_files_dir(&app)?;
+    for filename in filenames {
+        if !is_safe_filename(&filename) {
+            continue;
+        }
+        let mut file_path = files_dir.clone();
+        file_path.push(&filename);
+        let _ = fs::remove_file(&file_path);
+    }
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let handle = app.handle();
+            if let Ok(root) = get_data_root(handle) {
+                let audio_dir = root.join("files").join("audio");
+                let _ = fs::create_dir_all(&audio_dir);
+                let _ = app.asset_protocol_scope().allow_directory(&audio_dir, true);
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (window, event);
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            load_db,
+            save_db,
+            get_db_dir,
+            save_image,
+            read_image,
+            delete_images,
+            scan_hyprnote_sessions,
+            write_import_log,
+            import_audio_file,
+            read_audio,
+            get_audio_path,
+            delete_audios,
+            create_backup,
+            restore_backup,
+            get_data_root_info,
+            set_data_root
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows, ..
+        } = event
+        {
+            if !has_visible_windows {
+                if let Some(w) = app_handle.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (app_handle, event);
+        }
+    });
+}
