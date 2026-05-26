@@ -39,7 +39,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "ZFc1MGNuVnpkR1ZrSUdOdmJXMWxiblE2SUcxcGJtbHphV2R1SUhCMVlteHBZeUJyWlhrNklEWTNSamRGUkVJMFFqWkRRMEk1TjBFS1VsZFNOblZqZVRKMFR6TXpXamxwSzNoNVRteG5kbTVYSzJneVZrMUhNVElyTTBGelRVNUlNa0YwWkhGSFZWSmlURFZQYm5NMmNsQUs=",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY3RjdFREI0QjZDQ0I5N0EKUldSNnVjeTJ0TzMzWjlpK3h5Tmxndm5XK2gyVk1HMTIrM0FzTU5IMkF0ZHFHVVJiTDVPbnM2clAK",
       "endpoints": [
         "https://github.com/titogarrido/titus-notes-ov/releases/latest/download/latest.json"
       ]
