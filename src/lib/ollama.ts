@@ -48,7 +48,8 @@ export function noteToPlainText(content: string): string {
       const collectText = (node: any): string => {
         if (!node) return "";
         if (typeof node.text === "string") return node.text;
-        if (node.type === "beautifulMention") return `@${node.value || ""}`;
+        if (node.type === "beautifulMention" || node.type === "custom-beautifulMention")
+          return `@${node.value || ""}`;
         if (node.children) return node.children.map(collectText).join("");
         return "";
       };

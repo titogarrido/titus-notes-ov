@@ -185,7 +185,11 @@ function extractMentionIds(value: string): { id: string; value?: string; kind?: 
     const out: { id: string; value?: string; kind?: string }[] = [];
     const walk = (n: any) => {
       if (!n) return;
-      if (n.type === "beautifulMention" || n.type === "mention") {
+      if (
+        n.type === "beautifulMention" ||
+        n.type === "custom-beautifulMention" ||
+        n.type === "mention"
+      ) {
         const data = n.data || n.__data || {};
         const id = data.id ?? n.id ?? n.__id;
         const kind = data.kind ?? n.kind;
