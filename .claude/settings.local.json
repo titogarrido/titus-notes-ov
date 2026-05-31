@@ -9,7 +9,9 @@
       "Bash(awk 'NR<622' /Users/titogarrido/Library/CloudStorage/SynologyDrive-macbookibm/Projetos/antigravity/notes-gr/src/views/ProjectsView.tsx)",
       "Read(//tmp/**)",
       "Bash(python3)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(grep -rn \"presign_put\\\\|fn presign\" /Users/titogarrido/.cargo/registry/src/index.crates.io-*/rust-s3-0.34.0/src/ 2>&1 | head -10)",
+      "Read(//Users/titogarrido/.cargo/registry/src/**)"
     ]
   }
 }

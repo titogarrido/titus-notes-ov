@@ -120,6 +120,33 @@ export interface DataRootInfo {
   isCustom: boolean;
 }
 
+export type S3Schedule = "off" | "daily" | "weekly";
+export type HyprnoteSchedule = "off" | "30m" | "1h" | "2h" | "4h";
+export type AudioCleanupAge = "1m" | "2m" | "3m";
+export type AudioCleanupSchedule = "off" | "daily" | "weekly";
+
+export interface AudioCleanupResult {
+  deleted: string[];
+  bytesFreed: number;
+  errors: string[];
+}
+
+export interface S3Credentials {
+  endpoint: string;
+  region: string;
+  bucket: string;
+  accessKey: string;
+  secretKey: string;
+  prefix: string;
+  pathStyle: boolean;
+}
+
+export interface S3BackupItem {
+  key: string;
+  size: number;
+  lastModified: string;
+}
+
 export interface Database {
   people: Person[];
   projects: Project[];
@@ -130,6 +157,14 @@ export interface Database {
   templates?: SummaryTemplate[];
   hyprnotePath?: string;
   profile?: UserProfile;
+  s3Schedule?: S3Schedule;
+  s3LastBackupAt?: string;
+  s3Retention?: number;
+  hyprnoteSchedule?: HyprnoteSchedule;
+  hyprnoteLastImportAt?: string;
+  audioCleanupAge?: AudioCleanupAge;
+  audioCleanupSchedule?: AudioCleanupSchedule;
+  audioCleanupLastAt?: string;
 }
 
 export interface ImportedHyprnoteSession {

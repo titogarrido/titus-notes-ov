@@ -19,17 +19,30 @@ import {
   Loader2,
   UserCircle,
   ArrowUpCircle,
+  Cloud,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { save as dialogSave, open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { check as checkUpdate, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { OllamaSettings, SummaryTemplate, ImportedHyprnoteSession, UserProfile } from "../types";
+import {
+  OllamaSettings,
+  SummaryTemplate,
+  UserProfile,
+  S3Credentials,
+  S3BackupItem,
+  S3Schedule,
+  HyprnoteSchedule,
+  AudioCleanupAge,
+  AudioCleanupSchedule,
+  AudioCleanupResult,
+} from "../types";
 import { pingOllama } from "../lib/ollama";
-import { buildImportReport, ImportReport } from "../lib/hyprnoteImport";
+import { ImportReport } from "../lib/hyprnoteImport";
 
 const DEFAULT_SETTINGS: OllamaSettings = {
   url: "http://localhost:11434",
@@ -45,9 +58,14 @@ export const SettingsView: React.FC = () => {
     updateTemplate,
     deleteTemplate,
     setHyprnotePath,
-    upsertNotes,
     reloadDb,
     updateProfile,
+    updateS3Schedule,
+    updateS3Retention,
+    updateHyprnoteSchedule,
+    runHyprnoteImport,
+    updateAudioCleanup,
+    runAudioCleanup,
     dataRoot,
     setDataRoot,
   } = useApp();
@@ -130,6 +148,57 @@ export const SettingsView: React.FC = () => {
   // ---- Hyprnote import ----
   const [hyprPath, setHyprPath] = useState(db.hyprnotePath || "");
   const [hyprSaved, setHyprSaved] = useState(false);
+  const [hyprSchedule, setHyprSchedule] = useState<HyprnoteSchedule>(
+    db.hyprnoteSchedule || "off",
+  );
+
+  useEffect(() => {
+    setHyprSchedule(db.hyprnoteSchedule || "off");
+  }, [db.hyprnoteSchedule]);
+
+  const handleHyprScheduleChange = async (v: HyprnoteSchedule) => {
+    setHyprSchedule(v);
+    await updateHyprnoteSchedule(v);
+  };
+
+  // ---- Audio cleanup ----
+  const [audioAge, setAudioAge] = useState<AudioCleanupAge>(
+    db.audioCleanupAge || "3m",
+  );
+  const [audioSchedule, setAudioSchedule] = useState<AudioCleanupSchedule>(
+    db.audioCleanupSchedule || "off",
+  );
+  const [audioCleanupStatus, setAudioCleanupStatus] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ok"; result: AudioCleanupResult }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+
+  useEffect(() => {
+    setAudioAge(db.audioCleanupAge || "3m");
+  }, [db.audioCleanupAge]);
+  useEffect(() => {
+    setAudioSchedule(db.audioCleanupSchedule || "off");
+  }, [db.audioCleanupSchedule]);
+
+  const handleAudioAgeChange = async (v: AudioCleanupAge) => {
+    setAudioAge(v);
+    await updateAudioCleanup(v, undefined);
+  };
+  const handleAudioScheduleChange = async (v: AudioCleanupSchedule) => {
+    setAudioSchedule(v);
+    await updateAudioCleanup(undefined, v);
+  };
+  const handleRunAudioCleanup = async () => {
+    setAudioCleanupStatus({ kind: "loading" });
+    try {
+      const result = await runAudioCleanup(audioAge);
+      setAudioCleanupStatus({ kind: "ok", result });
+    } catch (e: any) {
+      setAudioCleanupStatus({ kind: "error", message: e?.message || String(e) });
+    }
+  };
   const [importing, setImporting] = useState(false);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -151,70 +220,12 @@ export const SettingsView: React.FC = () => {
     setImportReport(null);
     setImportLogPath(null);
     setImporting(true);
-    const tsStart = new Date();
     try {
-      const path = hyprPath.trim();
-      if (!path) throw new Error("Configure o caminho antes de importar.");
-      // Garante que o path está salvo antes
-      if (path !== (db.hyprnotePath || "")) {
-        await setHyprnotePath(path);
-      }
-      const sessions = await invoke<ImportedHyprnoteSession[]>(
-        "scan_hyprnote_sessions",
-        { path },
-      );
-      const report = buildImportReport(sessions, db.notes, path);
-
-      // Copia os áudios para files/audio/ antes de salvar as notas.
-      // Se a cópia falhar pra um item, removemos audioFile pra não criar
-      // referência quebrada — e logamos no import.log.
-      const audioErrors: string[] = [];
-      if (report.pendingAudioCopies.length > 0) {
-        const noteById = new Map(report.notes.map((n) => [n.id, n]));
-        for (const job of report.pendingAudioCopies) {
-          try {
-            await invoke<string>("import_audio_file", {
-              sourcePath: job.sourcePath,
-              destFilename: job.destFilename,
-            });
-          } catch (err: any) {
-            const msg = err?.message || String(err);
-            audioErrors.push(`[${job.noteId}] áudio: ${msg}`);
-            const n = noteById.get(job.noteId);
-            if (n) n.audioFile = "";
-          }
-        }
-      }
-      if (audioErrors.length > 0) {
-        report.log +=
-          `\n--- Falhas ao copiar áudio (${audioErrors.length}) ---\n` +
-          audioErrors.map((l) => `  ${l}`).join("\n");
-      }
-
-      if (report.notes.length > 0) {
-        await upsertNotes(report.notes);
-      }
-      // Persiste o log (sempre sobrescreve)
-      try {
-        const wrote = await invoke<string>("write_import_log", { content: report.log });
-        setImportLogPath(wrote);
-      } catch (logErr) {
-        console.error("Falha ao gravar import.log:", logErr);
-      }
+      const { report, logPath } = await runHyprnoteImport(hyprPath.trim());
       setImportReport(report);
+      if (logPath) setImportLogPath(logPath);
     } catch (e: any) {
-      const msg = e?.message || String(e);
-      setImportError(msg);
-      // Mesmo em erro, tenta gravar o log com o que aconteceu
-      try {
-        const errLog =
-          `[${tsStart.toISOString()}] === Importação Hyprnote ===\n` +
-          `[${new Date().toISOString()}] ERROR ${msg}\n`;
-        const wrote = await invoke<string>("write_import_log", { content: errLog });
-        setImportLogPath(wrote);
-      } catch {
-        /* ignore */
-      }
+      setImportError(e?.message || String(e));
     } finally {
       setImporting(false);
     }
@@ -341,6 +352,250 @@ export const SettingsView: React.FC = () => {
     } finally {
       setPendingNewRoot(null);
     }
+  };
+
+  // ---- S3 remote backup ----
+  const DEFAULT_S3: S3Credentials = {
+    endpoint: "",
+    region: "us-east-1",
+    bucket: "",
+    accessKey: "",
+    secretKey: "",
+    prefix: "",
+    pathStyle: false,
+  };
+  const [s3Form, setS3Form] = useState<S3Credentials>(DEFAULT_S3);
+  const [s3SaveHint, setS3SaveHint] = useState(false);
+  const [s3Conn, setS3Conn] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ok"; count: number }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const [s3Backup, setS3Backup] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ok"; key: string }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const [uploadProgress, setUploadProgress] = useState<{
+    phase: "zipping" | "uploading";
+    startedAt: number;
+    zipProcessed?: number;
+    zipTotal?: number;
+    zipCurrentFile?: string;
+    uploaded?: number;
+    total?: number;
+    filename?: string;
+  } | null>(null);
+  const [s3Restore, setS3Restore] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ok" }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const [s3ListOpen, setS3ListOpen] = useState(false);
+  const [s3List, setS3List] = useState<S3BackupItem[] | null>(null);
+  const [s3ListLoading, setS3ListLoading] = useState(false);
+  const [s3ListError, setS3ListError] = useState<string | null>(null);
+  const [pendingRestoreKey, setPendingRestoreKey] = useState<string | null>(null);
+  const [restoreS3ConfirmOpen, setRestoreS3ConfirmOpen] = useState(false);
+  const [schedule, setSchedule] = useState<S3Schedule>(db.s3Schedule || "off");
+  const [retention, setRetention] = useState<number>(db.s3Retention ?? 3);
+
+  useEffect(() => {
+    setSchedule(db.s3Schedule || "off");
+  }, [db.s3Schedule]);
+
+  useEffect(() => {
+    setRetention(db.s3Retention ?? 3);
+  }, [db.s3Retention]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const loaded = await invoke<S3Credentials | null>("load_s3_credentials");
+        if (loaded) setS3Form({ ...DEFAULT_S3, ...loaded });
+      } catch (err) {
+        console.error("load_s3_credentials:", err);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
+    (async () => {
+      const z1 = await listen<{ total: number }>("s3-zip-started", (e) => {
+        setUploadProgress({
+          phase: "zipping",
+          startedAt: Date.now(),
+          zipProcessed: 0,
+          zipTotal: e.payload.total,
+        });
+      });
+      const z2 = await listen<{ processed: number; total: number; currentFile: string }>(
+        "s3-zip-progress",
+        (e) => {
+          setUploadProgress((prev) =>
+            prev && prev.phase === "zipping"
+              ? {
+                  ...prev,
+                  zipProcessed: e.payload.processed,
+                  zipTotal: e.payload.total,
+                  zipCurrentFile: e.payload.currentFile,
+                }
+              : prev,
+          );
+        },
+      );
+      const u1 = await listen<{ total: number; filename: string; key: string }>(
+        "s3-upload-started",
+        (e) => {
+          setUploadProgress({
+            phase: "uploading",
+            startedAt: Date.now(),
+            uploaded: 0,
+            total: e.payload.total,
+            filename: e.payload.filename,
+          });
+        },
+      );
+      const u2 = await listen<{ uploaded: number; total: number }>(
+        "s3-upload-progress",
+        (e) => {
+          setUploadProgress((prev) =>
+            prev && prev.phase === "uploading"
+              ? { ...prev, uploaded: e.payload.uploaded, total: e.payload.total }
+              : prev,
+          );
+        },
+      );
+      const u3 = await listen<{ key: string; total: number }>(
+        "s3-upload-finished",
+        (e) => {
+          setUploadProgress((prev) =>
+            prev && prev.phase === "uploading"
+              ? { ...prev, uploaded: e.payload.total }
+              : prev,
+          );
+          setTimeout(() => setUploadProgress(null), 1500);
+        },
+      );
+      const u4 = await listen("s3-upload-error", () => {
+        setUploadProgress(null);
+      });
+      unlisteners.push(z1, z2, u1, u2, u3, u4);
+    })();
+    return () => {
+      unlisteners.forEach((u) => u());
+    };
+  }, []);
+
+  const fmtBytes = (n: number) => {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  };
+  const fmtSpeed = (bytes: number, ms: number) => {
+    if (ms <= 0) return "—";
+    const bps = (bytes / ms) * 1000;
+    return `${fmtBytes(bps)}/s`;
+  };
+
+  const updateS3Field = <K extends keyof S3Credentials>(key: K, val: S3Credentials[K]) =>
+    setS3Form((f) => ({ ...f, [key]: val }));
+
+  const handleSaveS3Creds = async () => {
+    try {
+      await invoke("save_s3_credentials", { creds: s3Form });
+      setS3SaveHint(true);
+      setTimeout(() => setS3SaveHint(false), 1500);
+    } catch (e: any) {
+      setS3Conn({ kind: "error", message: e?.message || String(e) });
+    }
+  };
+
+  const handleTestS3 = async () => {
+    setS3Conn({ kind: "loading" });
+    try {
+      const count = await invoke<number>("test_s3_connection", { creds: s3Form });
+      setS3Conn({ kind: "ok", count });
+    } catch (e: any) {
+      setS3Conn({ kind: "error", message: e?.message || String(e) });
+    }
+  };
+
+  const handleBackupToS3 = async () => {
+    setS3Backup({ kind: "loading" });
+    try {
+      const key = await invoke<string>("backup_to_s3", {
+        creds: s3Form,
+        retention,
+      });
+      setS3Backup({ kind: "ok", key });
+      await updateS3Schedule(schedule, new Date().toISOString());
+    } catch (e: any) {
+      setS3Backup({ kind: "error", message: e?.message || String(e) });
+    }
+  };
+
+  const handleRetentionChange = async (n: number) => {
+    const clamped = Math.max(1, Math.min(99, Math.floor(n) || 3));
+    setRetention(clamped);
+    await updateS3Retention(clamped);
+  };
+
+  const handleOpenRestoreList = async () => {
+    setS3ListOpen(true);
+    setS3ListLoading(true);
+    setS3List(null);
+    setS3ListError(null);
+    try {
+      const items = await invoke<S3BackupItem[]>("list_s3_backups", { creds: s3Form });
+      setS3List(items);
+    } catch (e: any) {
+      setS3ListError(e?.message || String(e));
+    } finally {
+      setS3ListLoading(false);
+    }
+  };
+
+  const handlePickRestoreKey = (key: string) => {
+    setPendingRestoreKey(key);
+    setS3ListOpen(false);
+    setRestoreS3ConfirmOpen(true);
+  };
+
+  const handleRestoreS3Confirm = async () => {
+    if (!pendingRestoreKey) return;
+    setRestoreS3ConfirmOpen(false);
+    setS3Restore({ kind: "loading" });
+    try {
+      await invoke("restore_from_s3", { creds: s3Form, key: pendingRestoreKey });
+      await reloadDb();
+      setS3Restore({ kind: "ok" });
+    } catch (e: any) {
+      setS3Restore({ kind: "error", message: e?.message || String(e) });
+    } finally {
+      setPendingRestoreKey(null);
+    }
+  };
+
+  const handleClearS3 = async () => {
+    try {
+      await invoke("clear_s3_credentials");
+      setS3Form(DEFAULT_S3);
+      setS3Conn({ kind: "idle" });
+    } catch (e: any) {
+      setS3Conn({ kind: "error", message: e?.message || String(e) });
+    }
+  };
+
+  const handleScheduleChange = async (v: S3Schedule) => {
+    setSchedule(v);
+    await updateS3Schedule(v);
   };
 
   // ---- Updater ----
@@ -698,6 +953,28 @@ export const SettingsView: React.FC = () => {
             </button>
           </div>
 
+          <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 14, paddingTop: 12 }}>
+            <div className="settings-text-block">
+              <span className="settings-title">Importação automática</span>
+              <span className="settings-desc">
+                Roda enquanto o app está aberto. Última: {db.hyprnoteLastImportAt ? new Date(db.hyprnoteLastImportAt).toLocaleString("pt-BR") : "—"}.
+              </span>
+            </div>
+            <select
+              className="form-select"
+              value={hyprSchedule}
+              onChange={(e) => handleHyprScheduleChange(e.target.value as HyprnoteSchedule)}
+              disabled={!hyprPath.trim()}
+              style={{ minWidth: 160 }}
+            >
+              <option value="off">Desligado</option>
+              <option value="30m">A cada 30 min</option>
+              <option value="1h">A cada 1 hora</option>
+              <option value="2h">A cada 2 horas</option>
+              <option value="4h">A cada 4 horas</option>
+            </select>
+          </div>
+
           {importError && (
             <div
               style={{
@@ -924,6 +1201,87 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
+        {/* Audio cleanup */}
+        <div className="settings-card">
+          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
+            <Trash2 size={16} />
+            <span>Limpeza de áudios antigos</span>
+          </h2>
+          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "14px" }}>
+            Apaga arquivos em <code>files/audio/</code> mais antigos que o limite escolhido. Notas que referenciavam
+            esses arquivos têm o campo <code>audioFile</code> esvaziado automaticamente — texto e sumários da nota não são afetados.
+          </p>
+
+          <div className="settings-row">
+            <div className="settings-text-block">
+              <span className="settings-title">Manter áudios dos últimos</span>
+              <span className="settings-desc">Arquivos mais antigos serão apagados.</span>
+            </div>
+            <select
+              className="form-select"
+              value={audioAge}
+              onChange={(e) => handleAudioAgeChange(e.target.value as AudioCleanupAge)}
+              style={{ minWidth: 140 }}
+            >
+              <option value="1m">1 mês</option>
+              <option value="2m">2 meses</option>
+              <option value="3m">3 meses</option>
+            </select>
+          </div>
+
+          <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 12, paddingTop: 12 }}>
+            <div className="settings-text-block">
+              <span className="settings-title">Limpar agora</span>
+              <span className="settings-desc">
+                Última: {db.audioCleanupLastAt ? new Date(db.audioCleanupLastAt).toLocaleString("pt-BR") : "—"}.
+              </span>
+            </div>
+            <button
+              className="btn-primary"
+              onClick={handleRunAudioCleanup}
+              disabled={audioCleanupStatus.kind === "loading"}
+              style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+            >
+              {audioCleanupStatus.kind === "loading" ? <Loader2 size={14} className="spin" /> : <Trash2 size={14} />}
+              <span>{audioCleanupStatus.kind === "loading" ? "Limpando..." : "Limpar agora"}</span>
+            </button>
+          </div>
+
+          {audioCleanupStatus.kind === "ok" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1f8e3d", marginTop: 6 }}>
+              <CheckCircle2 size={14} />
+              <span>
+                {audioCleanupStatus.result.deleted.length} arquivo(s) apagado(s)
+                {" · "}
+                {(audioCleanupStatus.result.bytesFreed / 1024 / 1024).toFixed(2)} MB liberados
+                {audioCleanupStatus.result.errors.length > 0 && ` · ${audioCleanupStatus.result.errors.length} erro(s)`}
+              </span>
+            </div>
+          )}
+          {audioCleanupStatus.kind === "error" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#cf222e", marginTop: 6 }}>
+              <AlertCircle size={14} /> {audioCleanupStatus.message}
+            </div>
+          )}
+
+          <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 12, paddingTop: 12 }}>
+            <div className="settings-text-block">
+              <span className="settings-title">Limpeza automática</span>
+              <span className="settings-desc">Roda enquanto o app está aberto.</span>
+            </div>
+            <select
+              className="form-select"
+              value={audioSchedule}
+              onChange={(e) => handleAudioScheduleChange(e.target.value as AudioCleanupSchedule)}
+              style={{ minWidth: 160 }}
+            >
+              <option value="off">Desligado</option>
+              <option value="daily">Diário</option>
+              <option value="weekly">Semanal</option>
+            </select>
+          </div>
+        </div>
+
         {/* Backup & Restore */}
         <div className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
@@ -989,6 +1347,283 @@ export const SettingsView: React.FC = () => {
                 <AlertCircle size={14} /> {restoreStatus.message}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Remote Backup · S3 */}
+        <div className="settings-card">
+          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
+            <Cloud size={16} />
+            <span>Backup Remoto · S3</span>
+          </h2>
+          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "14px" }}>
+            Envie backups para um bucket S3 compatível (AWS, MinIO, Cloudflare R2, Backblaze B2, Wasabi).
+            Credenciais ficam em <code>.s3-creds</code> dentro da pasta de dados e <strong>não</strong> entram no zip.
+          </p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+              Endpoint (vazio = AWS)
+              <input
+                type="text"
+                className="form-input"
+                value={s3Form.endpoint}
+                onChange={(e) => updateS3Field("endpoint", e.target.value)}
+                placeholder="https://s3.amazonaws.com ou https://<account>.r2.cloudflarestorage.com"
+                spellCheck={false}
+                style={{ fontFamily: "monospace", fontSize: "12px" }}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+              Região
+              <input
+                type="text"
+                className="form-input"
+                value={s3Form.region}
+                onChange={(e) => updateS3Field("region", e.target.value)}
+                placeholder="us-east-1"
+                spellCheck={false}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+              Bucket
+              <input
+                type="text"
+                className="form-input"
+                value={s3Form.bucket}
+                onChange={(e) => updateS3Field("bucket", e.target.value)}
+                placeholder="meu-bucket"
+                spellCheck={false}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+              Prefixo (opcional)
+              <input
+                type="text"
+                className="form-input"
+                value={s3Form.prefix}
+                onChange={(e) => updateS3Field("prefix", e.target.value)}
+                placeholder="backups/titus-notes"
+                spellCheck={false}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+              Access Key ID
+              <input
+                type="text"
+                className="form-input"
+                value={s3Form.accessKey}
+                onChange={(e) => updateS3Field("accessKey", e.target.value)}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+              Secret Access Key
+              <input
+                type="password"
+                className="form-input"
+                value={s3Form.secretKey}
+                onChange={(e) => updateS3Field("secretKey", e.target.value)}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </label>
+          </div>
+
+          <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={s3Form.pathStyle}
+              onChange={(e) => updateS3Field("pathStyle", e.target.checked)}
+            />
+            <span>Usar path-style (necessário p/ MinIO e alguns providers self-hosted)</span>
+          </label>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "14px", flexWrap: "wrap" }}>
+            <button className="btn-primary" onClick={handleSaveS3Creds}>
+              Salvar credenciais
+            </button>
+            <button className="btn-secondary" onClick={handleTestS3}>
+              {s3Conn.kind === "loading" ? "Testando..." : "Testar conexão"}
+            </button>
+            <button className="btn-secondary" onClick={handleClearS3} style={{ color: "#cf222e" }}>
+              Apagar credenciais
+            </button>
+            {s3SaveHint && (
+              <span style={{ fontSize: "12px", color: "#1f8e3d", display: "flex", alignItems: "center", gap: "4px" }}>
+                <CheckCircle2 size={14} /> Salvo
+              </span>
+            )}
+            {s3Conn.kind === "ok" && (
+              <span style={{ fontSize: "12px", color: "#1f8e3d", display: "flex", alignItems: "center", gap: "4px" }}>
+                <CheckCircle2 size={14} /> Conectado · {s3Conn.count} objeto(s) no prefixo
+              </span>
+            )}
+            {s3Conn.kind === "error" && (
+              <span style={{ fontSize: "12px", color: "#cf222e", display: "flex", alignItems: "center", gap: "4px" }}>
+                <AlertCircle size={14} /> {s3Conn.message}
+              </span>
+            )}
+          </div>
+
+          <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 16, paddingTop: 12 }}>
+            <div className="settings-text-block">
+              <span className="settings-title">Enviar backup agora</span>
+              <span className="settings-desc">
+                Gera o zip e envia para <code>{s3Form.prefix ? `${s3Form.prefix.replace(/\/+$/, "")}/` : ""}titus-notes-backup-*.zip</code>.
+              </span>
+            </div>
+            <button
+              className="btn-primary"
+              onClick={handleBackupToS3}
+              disabled={s3Backup.kind === "loading" || !s3Form.bucket.trim()}
+              style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+            >
+              {s3Backup.kind === "loading" ? <Loader2 size={14} className="spin" /> : <Upload size={14} />}
+              <span>{s3Backup.kind === "loading" ? "Enviando..." : "Fazer backup p/ S3"}</span>
+            </button>
+          </div>
+          {uploadProgress && (() => {
+            const elapsed = Date.now() - uploadProgress.startedAt;
+            if (uploadProgress.phase === "zipping") {
+              const proc = uploadProgress.zipProcessed ?? 0;
+              const tot = uploadProgress.zipTotal ?? 0;
+              const pct = tot > 0 ? Math.min(100, (proc / tot) * 100) : 0;
+              return (
+                <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid var(--border-color)", borderRadius: 8, background: "var(--bg-sidebar)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, fontSize: 12 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <Loader2 size={12} className="spin" />
+                      <strong>Compactando arquivos…</strong>
+                    </span>
+                    <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                      {tot > 0 ? `${proc} / ${tot}` : "…"}
+                    </span>
+                  </div>
+                  <div style={{ height: 6, background: "rgba(0,0,0,0.08)", borderRadius: 3, overflow: "hidden" }}>
+                    <div
+                      style={{
+                        width: `${pct}%`,
+                        height: "100%",
+                        background: "var(--color-accent, #4f6ef7)",
+                        transition: "width 120ms linear",
+                      }}
+                    />
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 11, color: "var(--color-text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {uploadProgress.zipCurrentFile || "Preparando…"}
+                  </div>
+                </div>
+              );
+            }
+            const uploaded = uploadProgress.uploaded ?? 0;
+            const total = uploadProgress.total ?? 0;
+            const pct = total > 0 ? Math.min(100, (uploaded / total) * 100) : 0;
+            return (
+              <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid var(--border-color)", borderRadius: 8, background: "var(--bg-sidebar)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, fontSize: 12 }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <Upload size={12} />
+                    <strong>Enviando para S3…</strong>
+                    {uploadProgress.filename && (
+                      <code style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                        {uploadProgress.filename}
+                      </code>
+                    )}
+                  </span>
+                  <span style={{ fontVariantNumeric: "tabular-nums" }}>{pct.toFixed(1)}%</span>
+                </div>
+                <div style={{ height: 6, background: "rgba(0,0,0,0.08)", borderRadius: 3, overflow: "hidden" }}>
+                  <div
+                    style={{
+                      width: `${pct}%`,
+                      height: "100%",
+                      background: "var(--color-accent, #4f6ef7)",
+                      transition: "width 120ms linear",
+                    }}
+                  />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "var(--color-text-muted)", fontVariantNumeric: "tabular-nums" }}>
+                  <span>{fmtBytes(uploaded)} / {fmtBytes(total)}</span>
+                  <span>{fmtSpeed(uploaded, elapsed)}</span>
+                </div>
+              </div>
+            );
+          })()}
+          {s3Backup.kind === "ok" && !uploadProgress && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1f8e3d", marginTop: 6 }}>
+              <CheckCircle2 size={14} /> Enviado: <code style={{ fontSize: 11 }}>{s3Backup.key}</code>
+            </div>
+          )}
+          {s3Backup.kind === "error" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#cf222e", marginTop: 6 }}>
+              <AlertCircle size={14} /> {s3Backup.message}
+            </div>
+          )}
+
+          <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 12, paddingTop: 12 }}>
+            <div className="settings-text-block">
+              <span className="settings-title">Restaurar de um backup remoto</span>
+              <span className="settings-desc">Lista os zips no bucket e substitui os dados atuais.</span>
+            </div>
+            <button
+              className="btn-secondary"
+              onClick={handleOpenRestoreList}
+              disabled={s3Restore.kind === "loading" || !s3Form.bucket.trim()}
+              style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+            >
+              {s3Restore.kind === "loading" ? <Loader2 size={14} className="spin" /> : <Download size={14} />}
+              <span>{s3Restore.kind === "loading" ? "Restaurando..." : "Restaurar do S3"}</span>
+            </button>
+          </div>
+          {s3Restore.kind === "ok" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1f8e3d", marginTop: 6 }}>
+              <CheckCircle2 size={14} /> Backup restaurado.
+            </div>
+          )}
+          {s3Restore.kind === "error" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#cf222e", marginTop: 6 }}>
+              <AlertCircle size={14} /> {s3Restore.message}
+            </div>
+          )}
+
+          <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 12, paddingTop: 12 }}>
+            <div className="settings-text-block">
+              <span className="settings-title">Reter últimos N backups</span>
+              <span className="settings-desc">
+                Após cada upload, backups mais antigos no prefixo são apagados. Padrão: 3.
+              </span>
+            </div>
+            <input
+              type="number"
+              className="form-input"
+              min={1}
+              max={99}
+              value={retention}
+              onChange={(e) => setRetention(Number(e.target.value))}
+              onBlur={(e) => handleRetentionChange(Number(e.target.value))}
+              style={{ width: 80 }}
+            />
+          </div>
+
+          <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 12, paddingTop: 12 }}>
+            <div className="settings-text-block">
+              <span className="settings-title">Backup automático</span>
+              <span className="settings-desc">
+                Roda quando o app está aberto. Última: {db.s3LastBackupAt ? new Date(db.s3LastBackupAt).toLocaleString("pt-BR") : "—"}.
+              </span>
+            </div>
+            <select
+              className="form-select"
+              value={schedule}
+              onChange={(e) => handleScheduleChange(e.target.value as S3Schedule)}
+              style={{ minWidth: 160 }}
+            >
+              <option value="off">Desligado</option>
+              <option value="daily">Diário</option>
+              <option value="weekly">Semanal</option>
+            </select>
           </div>
         </div>
 
@@ -1078,6 +1713,88 @@ export const SettingsView: React.FC = () => {
         onConfirm={handleConfirmResetRoot}
         onCancel={() => setResetRootConfirmOpen(false)}
       />
+
+      <ConfirmDialog
+        open={restoreS3ConfirmOpen}
+        title="Restaurar backup remoto?"
+        message={
+          <>
+            <strong>Atenção:</strong> os dados locais serão substituídos pelo conteúdo do backup remoto. Esta ação não pode ser desfeita.
+            {pendingRestoreKey && (
+              <div style={{ marginTop: 8, fontFamily: "monospace", fontSize: 11, color: "var(--color-text-muted)", wordBreak: "break-all" }}>
+                {pendingRestoreKey}
+              </div>
+            )}
+          </>
+        }
+        confirmLabel="Restaurar"
+        danger
+        onConfirm={handleRestoreS3Confirm}
+        onCancel={() => { setRestoreS3ConfirmOpen(false); setPendingRestoreKey(null); }}
+      />
+
+      {s3ListOpen && (
+        <div
+          onClick={() => setS3ListOpen(false)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 9999, backdropFilter: "blur(2px)",
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "white", borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
+              padding: 20, width: 640, maxWidth: "92vw", maxHeight: "80vh",
+              display: "flex", flexDirection: "column", gap: 12,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Backups no S3</h3>
+              <button type="button" className="btn-icon" onClick={() => setS3ListOpen(false)} title="Fechar">
+                <X size={16} />
+              </button>
+            </div>
+            {s3ListLoading && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--color-text-muted)" }}>
+                <Loader2 size={14} className="spin" /> Listando...
+              </div>
+            )}
+            {s3ListError && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#cf222e" }}>
+                <AlertCircle size={14} /> {s3ListError}
+              </div>
+            )}
+            {!s3ListLoading && s3List && s3List.length === 0 && (
+              <div style={{ fontSize: 13, color: "var(--color-text-muted)", fontStyle: "italic" }}>
+                Nenhum backup encontrado neste prefixo.
+              </div>
+            )}
+            {!s3ListLoading && s3List && s3List.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, overflowY: "auto" }}>
+                {s3List.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => handlePickRestoreKey(item.key)}
+                    style={{
+                      textAlign: "left", padding: "10px 12px", border: "1px solid var(--border-color)",
+                      borderRadius: 8, background: "white", cursor: "pointer",
+                      display: "flex", flexDirection: "column", gap: 2,
+                    }}
+                  >
+                    <div style={{ fontSize: 13, fontWeight: 600, wordBreak: "break-all" }}>{item.key}</div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                      {(item.size / 1024 / 1024).toFixed(2)} MB · {item.lastModified}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <ConfirmDialog
         open={restoreConfirmOpen}

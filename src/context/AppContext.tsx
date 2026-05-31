@@ -11,7 +11,10 @@ import {
   SummaryTemplate,
   UserProfile,
   DataRootInfo,
+  ImportedHyprnoteSession,
+  AudioCleanupResult,
 } from "../types";
+import { buildImportReport, ImportReport } from "../lib/hyprnoteImport";
 
 const DEFAULT_SETTINGS: OllamaSettings = {
   url: "http://localhost:11434",
@@ -124,6 +127,12 @@ interface AppContextType {
   upsertNotes: (notes: Note[]) => Promise<void>;
   reloadDb: () => Promise<void>;
   updateProfile: (profile: UserProfile) => Promise<void>;
+  updateS3Schedule: (schedule: string, lastBackupAt?: string) => Promise<void>;
+  updateS3Retention: (retention: number) => Promise<void>;
+  updateHyprnoteSchedule: (schedule: string) => Promise<void>;
+  runHyprnoteImport: (pathOverride?: string) => Promise<{ report: ImportReport; logPath: string | null }>;
+  updateAudioCleanup: (age?: string, schedule?: string) => Promise<void>;
+  runAudioCleanup: (ageOverride?: string) => Promise<AudioCleanupResult>;
   dataRoot: DataRootInfo | null;
   refreshDataRoot: () => Promise<void>;
   setDataRoot: (path: string | null, migrate: boolean) => Promise<DataRootInfo>;
@@ -166,6 +175,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     loadData();
   }, []);
+
+  // S3 backup scheduler — checks on mount + every 15 min while app is open.
+  // Disabled when s3Schedule === "off" or no creds saved.
+  const s3RunningRef = useRef(false);
+  useEffect(() => {
+    const intervalMs = (() => {
+      switch (db.s3Schedule) {
+        case "daily":
+          return 24 * 60 * 60 * 1000;
+        case "weekly":
+          return 7 * 24 * 60 * 60 * 1000;
+        default:
+          return 0;
+      }
+    })();
+    if (!intervalMs) return;
+
+    const tryRun = async () => {
+      if (s3RunningRef.current) return;
+      const last = db.s3LastBackupAt ? Date.parse(db.s3LastBackupAt) : 0;
+      if (Date.now() - last < intervalMs) return;
+      s3RunningRef.current = true;
+      try {
+        const creds = await invoke<unknown>("load_s3_credentials");
+        if (!creds) return;
+        await invoke("backup_to_s3", { creds, retention: db.s3Retention ?? 3 });
+        await saveDatabase((prev) => ({
+          ...prev,
+          s3LastBackupAt: new Date().toISOString(),
+        }));
+      } catch (err) {
+        console.error("S3 auto-backup falhou:", err);
+      } finally {
+        s3RunningRef.current = false;
+      }
+    };
+
+    tryRun();
+    const t = setInterval(tryRun, 15 * 60 * 1000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db.s3Schedule, db.s3LastBackupAt]);
 
   const refreshDataRoot = async () => {
     try {
@@ -427,6 +478,199 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await saveDatabase((prev) => ({ ...prev, profile }));
   };
 
+  const updateS3Schedule = async (schedule: string, lastBackupAt?: string) => {
+    await saveDatabase((prev) => ({
+      ...prev,
+      s3Schedule: schedule as Database["s3Schedule"],
+      ...(lastBackupAt !== undefined ? { s3LastBackupAt: lastBackupAt } : {}),
+    }));
+  };
+
+  const updateS3Retention = async (retention: number) => {
+    await saveDatabase((prev) => ({ ...prev, s3Retention: retention }));
+  };
+
+  const updateHyprnoteSchedule = async (schedule: string) => {
+    await saveDatabase((prev) => ({
+      ...prev,
+      hyprnoteSchedule: schedule as Database["hyprnoteSchedule"],
+    }));
+  };
+
+  const runHyprnoteImport = async (
+    pathOverride?: string,
+  ): Promise<{ report: ImportReport; logPath: string | null }> => {
+    const path = (pathOverride ?? db.hyprnotePath ?? "").trim();
+    if (!path) throw new Error("Configure o caminho do Hyprnote antes de importar.");
+    if (pathOverride && pathOverride !== (db.hyprnotePath || "")) {
+      await setHyprnotePath(pathOverride);
+    }
+    const tsStart = new Date();
+    try {
+      const sessions = await invoke<ImportedHyprnoteSession[]>(
+        "scan_hyprnote_sessions",
+        { path },
+      );
+      const report = buildImportReport(sessions, db.notes, path);
+      const audioErrors: string[] = [];
+      if (report.pendingAudioCopies.length > 0) {
+        const noteById = new Map(report.notes.map((n) => [n.id, n]));
+        for (const job of report.pendingAudioCopies) {
+          try {
+            await invoke<string>("import_audio_file", {
+              sourcePath: job.sourcePath,
+              destFilename: job.destFilename,
+            });
+          } catch (err: any) {
+            audioErrors.push(`[${job.noteId}] áudio: ${err?.message || String(err)}`);
+            const n = noteById.get(job.noteId);
+            if (n) n.audioFile = "";
+          }
+        }
+      }
+      if (audioErrors.length > 0) {
+        report.log +=
+          `\n--- Falhas ao copiar áudio (${audioErrors.length}) ---\n` +
+          audioErrors.map((l) => `  ${l}`).join("\n");
+      }
+      if (report.notes.length > 0) {
+        await upsertNotes(report.notes);
+      }
+      let logPath: string | null = null;
+      try {
+        logPath = await invoke<string>("write_import_log", { content: report.log });
+      } catch (logErr) {
+        console.error("Falha ao gravar import.log:", logErr);
+      }
+      await saveDatabase((prev) => ({
+        ...prev,
+        hyprnoteLastImportAt: new Date().toISOString(),
+      }));
+      return { report, logPath };
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      try {
+        const errLog =
+          `[${tsStart.toISOString()}] === Importação Hyprnote ===\n` +
+          `[${new Date().toISOString()}] ERROR ${msg}\n`;
+        await invoke("write_import_log", { content: errLog });
+      } catch {
+        /* ignore */
+      }
+      throw e;
+    }
+  };
+
+  // Hyprnote auto-import scheduler — checks every minute while app is open.
+  const hyprRunningRef = useRef(false);
+  useEffect(() => {
+    const intervalMs = (() => {
+      switch (db.hyprnoteSchedule) {
+        case "30m":
+          return 30 * 60 * 1000;
+        case "1h":
+          return 60 * 60 * 1000;
+        case "2h":
+          return 2 * 60 * 60 * 1000;
+        case "4h":
+          return 4 * 60 * 60 * 1000;
+        default:
+          return 0;
+      }
+    })();
+    if (!intervalMs || !db.hyprnotePath) return;
+
+    const tryRun = async () => {
+      if (hyprRunningRef.current) return;
+      const last = db.hyprnoteLastImportAt ? Date.parse(db.hyprnoteLastImportAt) : 0;
+      if (Date.now() - last < intervalMs) return;
+      hyprRunningRef.current = true;
+      try {
+        await runHyprnoteImport();
+      } catch (err) {
+        console.error("Importação automática do Hyprnote falhou:", err);
+      } finally {
+        hyprRunningRef.current = false;
+      }
+    };
+
+    tryRun();
+    const t = setInterval(tryRun, 60 * 1000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db.hyprnoteSchedule, db.hyprnoteLastImportAt, db.hyprnotePath]);
+
+  const updateAudioCleanup = async (age?: string, schedule?: string) => {
+    await saveDatabase((prev) => ({
+      ...prev,
+      ...(age !== undefined
+        ? { audioCleanupAge: age as Database["audioCleanupAge"] }
+        : {}),
+      ...(schedule !== undefined
+        ? { audioCleanupSchedule: schedule as Database["audioCleanupSchedule"] }
+        : {}),
+    }));
+  };
+
+  const runAudioCleanup = async (
+    ageOverride?: string,
+  ): Promise<AudioCleanupResult> => {
+    const age = (ageOverride ?? db.audioCleanupAge ?? "3m") as "1m" | "2m" | "3m";
+    const months = age === "1m" ? 1 : age === "2m" ? 2 : 3;
+    const result = await invoke<AudioCleanupResult>("cleanup_old_audios", { months });
+    if (result.deleted.length > 0) {
+      const deletedSet = new Set(result.deleted);
+      await saveDatabase((prev) => ({
+        ...prev,
+        notes: prev.notes.map((n) =>
+          n.audioFile && deletedSet.has(n.audioFile) ? { ...n, audioFile: "" } : n,
+        ),
+        audioCleanupLastAt: new Date().toISOString(),
+      }));
+    } else {
+      await saveDatabase((prev) => ({
+        ...prev,
+        audioCleanupLastAt: new Date().toISOString(),
+      }));
+    }
+    return result;
+  };
+
+  // Audio cleanup scheduler — checks every hour while app is open.
+  const audioCleanupRunningRef = useRef(false);
+  useEffect(() => {
+    const intervalMs = (() => {
+      switch (db.audioCleanupSchedule) {
+        case "daily":
+          return 24 * 60 * 60 * 1000;
+        case "weekly":
+          return 7 * 24 * 60 * 60 * 1000;
+        default:
+          return 0;
+      }
+    })();
+    if (!intervalMs) return;
+
+    const tryRun = async () => {
+      if (audioCleanupRunningRef.current) return;
+      const last = db.audioCleanupLastAt ? Date.parse(db.audioCleanupLastAt) : 0;
+      if (Date.now() - last < intervalMs) return;
+      audioCleanupRunningRef.current = true;
+      try {
+        await runAudioCleanup();
+      } catch (err) {
+        console.error("Limpeza automática de áudios falhou:", err);
+      } finally {
+        audioCleanupRunningRef.current = false;
+      }
+    };
+
+    tryRun();
+    const t = setInterval(tryRun, 60 * 60 * 1000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db.audioCleanupSchedule, db.audioCleanupLastAt, db.audioCleanupAge]);
+
   const reloadDb = async () => {
     try {
       const data = await invoke<Database>("load_db");
@@ -505,6 +749,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         upsertNotes,
         reloadDb,
         updateProfile,
+        updateS3Schedule,
+        updateS3Retention,
+        updateHyprnoteSchedule,
+        runHyprnoteImport,
+        updateAudioCleanup,
+        runAudioCleanup,
         dataRoot,
         refreshDataRoot,
         setDataRoot,
