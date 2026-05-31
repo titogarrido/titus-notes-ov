@@ -674,10 +674,76 @@ export const SettingsView: React.FC = () => {
     }
   };
 
+  const navGroups: Array<{ label: string; items: Array<{ id: string; label: string }> }> = [
+    {
+      label: "Conta",
+      items: [{ id: "profile", label: "Perfil" }],
+    },
+    {
+      label: "Inteligência Artificial",
+      items: [
+        { id: "ollama", label: "Ollama" },
+        { id: "templates", label: "Templates de sumário" },
+      ],
+    },
+    {
+      label: "Integrações",
+      items: [{ id: "hyprnote", label: "Hyprnote (analog)" }],
+    },
+    {
+      label: "Armazenamento",
+      items: [
+        { id: "database", label: "Banco de dados" },
+        { id: "audio-cleanup", label: "Limpeza de áudios" },
+        { id: "backup-local", label: "Backup local" },
+        { id: "backup-s3", label: "Backup remoto · S3" },
+      ],
+    },
+    {
+      label: "Sistema",
+      items: [
+        { id: "updates", label: "Atualizações" },
+        { id: "about", label: "Sobre" },
+      ],
+    },
+  ];
+  const navOrder = navGroups.flatMap((g) => g.items.map((i) => i.id));
+  const [activeSection, setActiveSection] = useState<string>(navOrder[0]);
+
+  useEffect(() => {
+    const targets = navOrder
+      .map((id) => document.getElementById(`section-${id}`))
+      .filter((el): el is HTMLElement => !!el);
+    if (targets.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+        if (visible) {
+          const id = visible.target.id.replace(/^section-/, "");
+          setActiveSection(id);
+        }
+      },
+      { rootMargin: "-20% 0px -70% 0px", threshold: 0 },
+    );
+    targets.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleNavClick = (id: string) => {
+    const el = document.getElementById(`section-${id}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      setActiveSection(id);
+    }
+  };
+
   return (
-    <div className="view-container" style={{ maxWidth: "880px" }}>
+    <div className="view-container" style={{ maxWidth: "1100px" }}>
       {/* Header */}
-      <div style={{ marginBottom: "28px" }}>
+      <div style={{ marginBottom: "20px" }}>
         <h1 className="detail-title" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <Settings size={24} />
           <span>Configurações</span>
@@ -687,9 +753,28 @@ export const SettingsView: React.FC = () => {
         </p>
       </div>
 
-      <div className="settings-box">
+      <div className="settings-layout">
+        <aside className="settings-nav" aria-label="Navegação de configurações">
+          {navGroups.map((g) => (
+            <div key={g.label} className="settings-nav-group">
+              <div className="settings-nav-group-label">{g.label}</div>
+              {g.items.map((it) => (
+                <button
+                  key={it.id}
+                  type="button"
+                  className={`settings-nav-link ${activeSection === it.id ? "active" : ""}`}
+                  onClick={() => handleNavClick(it.id)}
+                >
+                  {it.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </aside>
+
+        <div className="settings-box settings-main">
         {/* Profile */}
-        <div className="settings-card">
+        <div id="section-profile" className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
             <UserCircle size={16} />
             <span>Perfil</span>
@@ -756,7 +841,7 @@ export const SettingsView: React.FC = () => {
         </div>
 
         {/* Ollama */}
-        <div className="settings-card">
+        <div id="section-ollama" className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
             <Sparkles size={16} />
             <span>Integração Ollama</span>
@@ -836,7 +921,7 @@ export const SettingsView: React.FC = () => {
         </div>
 
         {/* Templates de sumário */}
-        <div className="settings-card">
+        <div id="section-templates" className="settings-card">
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
             <h2 className="section-title" style={{ fontSize: "15px", margin: 0 }}>
               <Sparkles size={16} />
@@ -901,7 +986,7 @@ export const SettingsView: React.FC = () => {
         </div>
 
         {/* Hyprnote import */}
-        <div className="settings-card">
+        <div id="section-hyprnote" className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
             <Download size={16} />
             <span>Importação · Hyprnote (analog)</span>
@@ -1033,92 +1118,8 @@ export const SettingsView: React.FC = () => {
           )}
         </div>
 
-        {/* Updates */}
-        <div className="settings-card">
-          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
-            <ArrowUpCircle size={16} />
-            <span>Atualizações</span>
-          </h2>
-          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "14px" }}>
-            Verifique se há uma nova versão publicada no GitHub Releases.
-          </p>
-
-          <div className="settings-row">
-            <div className="settings-text-block">
-              <span className="settings-title">Versão atual: {appVersion || "—"}</span>
-              <span className="settings-desc">
-                {updateStatus.kind === "idle" && "Clique para verificar."}
-                {updateStatus.kind === "checking" && "Verificando..."}
-                {updateStatus.kind === "uptodate" && "Você está com a versão mais recente."}
-                {updateStatus.kind === "available" && `Nova versão disponível: ${updateStatus.version}`}
-                {updateStatus.kind === "downloading" &&
-                  (updateStatus.total > 0
-                    ? `Baixando ${updateStatus.version}: ${Math.round((updateStatus.progress / updateStatus.total) * 100)}%`
-                    : `Baixando ${updateStatus.version}...`)}
-                {updateStatus.kind === "ready" && "Instalando e reiniciando..."}
-                {updateStatus.kind === "error" && updateStatus.message}
-              </span>
-            </div>
-            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-              {updateStatus.kind === "available" ? (
-                <button
-                  className="btn-primary"
-                  onClick={handleInstallUpdate}
-                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
-                >
-                  <Download size={14} />
-                  <span>Baixar e instalar</span>
-                </button>
-              ) : (
-                <button
-                  className="btn-secondary"
-                  onClick={handleCheckUpdate}
-                  disabled={updateStatus.kind === "checking" || updateStatus.kind === "downloading"}
-                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
-                >
-                  {(updateStatus.kind === "checking" || updateStatus.kind === "downloading") ? (
-                    <Loader2 size={14} className="spin" />
-                  ) : (
-                    <ArrowUpCircle size={14} />
-                  )}
-                  <span>Verificar atualizações</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {updateStatus.kind === "available" && updateStatus.notes && (
-            <div
-              style={{
-                marginTop: "12px",
-                padding: "10px 12px",
-                background: "var(--bg-sidebar)",
-                borderRadius: "8px",
-                fontSize: "12px",
-                whiteSpace: "pre-wrap",
-                maxHeight: 200,
-                overflowY: "auto",
-              }}
-            >
-              {updateStatus.notes}
-            </div>
-          )}
-        </div>
-
-        {/* About */}
-        <div className="settings-card">
-          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
-            <Info size={16} />
-            <span>Sobre o Titus Notes</span>
-          </h2>
-          <p style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--color-text-muted)" }}>
-            O <strong>Titus Notes</strong> é um organizador pessoal e gerenciador de reuniões profissional, autocontido, mono-usuário e 100% offline.
-            Versão <strong>{appVersion || "—"}</strong>. Desenvolvido com <strong>Tauri v2 + Rust</strong> e interface <strong>React</strong>.
-          </p>
-        </div>
-
         {/* Database Info */}
-        <div className="settings-card">
+        <div id="section-database" className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "16px" }}>
             <DbIcon size={16} />
             <span>Banco de Dados Local</span>
@@ -1202,7 +1203,7 @@ export const SettingsView: React.FC = () => {
         </div>
 
         {/* Audio cleanup */}
-        <div className="settings-card">
+        <div id="section-audio-cleanup" className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
             <Trash2 size={16} />
             <span>Limpeza de áudios antigos</span>
@@ -1283,7 +1284,7 @@ export const SettingsView: React.FC = () => {
         </div>
 
         {/* Backup & Restore */}
-        <div className="settings-card">
+        <div id="section-backup-local" className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
             <ArchiveRestore size={16} />
             <span>Backup e Restauração</span>
@@ -1351,7 +1352,7 @@ export const SettingsView: React.FC = () => {
         </div>
 
         {/* Remote Backup · S3 */}
-        <div className="settings-card">
+        <div id="section-backup-s3" className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
             <Cloud size={16} />
             <span>Backup Remoto · S3</span>
@@ -1627,6 +1628,91 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
+        {/* Updates */}
+        <div id="section-updates" className="settings-card">
+          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
+            <ArrowUpCircle size={16} />
+            <span>Atualizações</span>
+          </h2>
+          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "14px" }}>
+            Verifique se há uma nova versão publicada no GitHub Releases.
+          </p>
+
+          <div className="settings-row">
+            <div className="settings-text-block">
+              <span className="settings-title">Versão atual: {appVersion || "—"}</span>
+              <span className="settings-desc">
+                {updateStatus.kind === "idle" && "Clique para verificar."}
+                {updateStatus.kind === "checking" && "Verificando..."}
+                {updateStatus.kind === "uptodate" && "Você está com a versão mais recente."}
+                {updateStatus.kind === "available" && `Nova versão disponível: ${updateStatus.version}`}
+                {updateStatus.kind === "downloading" &&
+                  (updateStatus.total > 0
+                    ? `Baixando ${updateStatus.version}: ${Math.round((updateStatus.progress / updateStatus.total) * 100)}%`
+                    : `Baixando ${updateStatus.version}...`)}
+                {updateStatus.kind === "ready" && "Instalando e reiniciando..."}
+                {updateStatus.kind === "error" && updateStatus.message}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              {updateStatus.kind === "available" ? (
+                <button
+                  className="btn-primary"
+                  onClick={handleInstallUpdate}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+                >
+                  <Download size={14} />
+                  <span>Baixar e instalar</span>
+                </button>
+              ) : (
+                <button
+                  className="btn-secondary"
+                  onClick={handleCheckUpdate}
+                  disabled={updateStatus.kind === "checking" || updateStatus.kind === "downloading"}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+                >
+                  {(updateStatus.kind === "checking" || updateStatus.kind === "downloading") ? (
+                    <Loader2 size={14} className="spin" />
+                  ) : (
+                    <ArrowUpCircle size={14} />
+                  )}
+                  <span>Verificar atualizações</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {updateStatus.kind === "available" && updateStatus.notes && (
+            <div
+              style={{
+                marginTop: "12px",
+                padding: "10px 12px",
+                background: "var(--bg-sidebar)",
+                borderRadius: "8px",
+                fontSize: "12px",
+                whiteSpace: "pre-wrap",
+                maxHeight: 200,
+                overflowY: "auto",
+              }}
+            >
+              {updateStatus.notes}
+            </div>
+          )}
+        </div>
+
+        {/* About */}
+        <div id="section-about" className="settings-card">
+          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
+            <Info size={16} />
+            <span>Sobre o Titus Notes</span>
+          </h2>
+          <p style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--color-text-muted)" }}>
+            O <strong>Titus Notes</strong> é um organizador pessoal e gerenciador de reuniões profissional, autocontido, mono-usuário e 100% offline.
+            Versão <strong>{appVersion || "—"}</strong>. Desenvolvido com <strong>Tauri v2 + Rust</strong> e interface <strong>React</strong>.
+          </p>
+        </div>
+
+        </div>
       </div>
 
       {/* Template editor modal */}
@@ -1661,6 +1747,70 @@ export const SettingsView: React.FC = () => {
       <style>{`
         .spin { animation: spinAnim 1s linear infinite; }
         @keyframes spinAnim { to { transform: rotate(360deg); } }
+
+        .settings-layout {
+          display: grid;
+          grid-template-columns: 200px 1fr;
+          gap: 28px;
+          align-items: start;
+        }
+        .settings-nav {
+          position: sticky;
+          top: 20px;
+          align-self: start;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          padding-right: 4px;
+          max-height: calc(100vh - 60px);
+          overflow-y: auto;
+        }
+        .settings-nav-group {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .settings-nav-group-label {
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--color-text-muted);
+          padding: 4px 8px;
+        }
+        .settings-nav-link {
+          background: transparent;
+          border: none;
+          text-align: left;
+          font-size: 13px;
+          color: var(--color-text, inherit);
+          padding: 6px 10px;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background 80ms ease, color 80ms ease;
+        }
+        .settings-nav-link:hover {
+          background: var(--bg-sidebar, rgba(0,0,0,0.04));
+        }
+        .settings-nav-link.active {
+          background: var(--color-accent, #4f6ef7);
+          color: #fff;
+          font-weight: 600;
+        }
+        .settings-main {
+          min-width: 0;
+        }
+        @media (max-width: 900px) {
+          .settings-layout { grid-template-columns: 1fr; }
+          .settings-nav {
+            position: static;
+            flex-direction: row;
+            flex-wrap: wrap;
+            max-height: none;
+          }
+          .settings-nav-group { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+          .settings-nav-group-label { width: 100%; }
+        }
       `}</style>
 
       <ConfirmDialog
