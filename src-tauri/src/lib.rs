@@ -621,15 +621,41 @@ fn get_audio_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn is_safe_filename(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.contains("..")
-        && !name.starts_with('.')
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    let bad = ['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*'];
+    if name.chars().any(|c| bad.contains(&c) || c.is_control()) {
+        return false;
+    }
+    if name.contains("..") || name.starts_with('.') {
+        return false;
+    }
+    let reserved = [
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let base = name.split('.').next().unwrap_or("").to_uppercase();
+    if reserved.contains(&base.as_str()) {
+        return false;
+    }
+    true
 }
 
 #[tauri::command]
 fn save_image(app: AppHandle, data: Vec<u8>, ext: String) -> Result<String, String> {
+    const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+    if data.is_empty() {
+        return Err("Imagem vazia".to_string());
+    }
+    if data.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "Imagem grande demais ({} bytes; máximo {} MB)",
+            data.len(),
+            MAX_IMAGE_BYTES / 1024 / 1024
+        ));
+    }
     let files_dir = get_files_dir(&app)?;
 
     let safe_ext: String = ext
@@ -638,10 +664,12 @@ fn save_image(app: AppHandle, data: Vec<u8>, ext: String) -> Result<String, Stri
         .filter(|c| c.is_ascii_alphanumeric())
         .take(8)
         .collect();
-    let safe_ext = if safe_ext.is_empty() {
-        "png".to_string()
+    let safe_ext = safe_ext.to_lowercase();
+    let allowed = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
+    let safe_ext = if allowed.contains(&safe_ext.as_str()) {
+        safe_ext
     } else {
-        safe_ext.to_lowercase()
+        "png".to_string()
     };
 
     let nanos = std::time::SystemTime::now()
@@ -1003,6 +1031,21 @@ fn create_backup(app: AppHandle, dest_path: String) -> Result<(), String> {
     create_backup_internal(&app, &dest_path, false)
 }
 
+fn is_safe_zip_entry_name(name: &str) -> bool {
+    use std::path::Component;
+    let p = std::path::Path::new(name);
+    if p.is_absolute() {
+        return false;
+    }
+    for c in p.components() {
+        match c {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
 #[tauri::command]
 fn restore_backup(app: AppHandle, backup_path: String) -> Result<(), String> {
     let data_root = get_data_root(&app)?;
@@ -1012,19 +1055,25 @@ fn restore_backup(app: AppHandle, backup_path: String) -> Result<(), String> {
     }
     let file = fs::File::open(&src).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let canonical_root = data_root.canonicalize().unwrap_or_else(|_| data_root.clone());
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().to_string();
+        if !is_safe_zip_entry_name(&name) {
+            return Err(format!("Entrada inválida no backup: {}", name));
+        }
         let out_path = data_root.join(&name);
-        if !out_path.starts_with(&data_root) {
-            continue;
+        // Sanity check pós-join via parent canonicalizado (parent existe ou é criado abaixo)
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            let canonical_parent = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+            if !canonical_parent.starts_with(&canonical_root) {
+                return Err(format!("Entrada fora do diretório de dados: {}", name));
+            }
         }
         if entry.is_dir() {
             fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
         } else {
-            if let Some(parent) = out_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
             let mut out_file = fs::File::create(&out_path).map_err(|e| e.to_string())?;
             std::io::copy(&mut entry, &mut out_file).map_err(|e| e.to_string())?;
         }

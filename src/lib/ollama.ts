@@ -99,6 +99,27 @@ Gere o sumário agora, somente em Markdown, sem comentários adicionais.`;
 
 export interface GenerateOptions {
   signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const PING_TIMEOUT_MS = 10 * 1000;
+
+function withTimeout(timeoutMs: number, external?: AbortSignal): {
+  signal: AbortSignal;
+  cancel: () => void;
+} {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(new DOMException("Timeout", "AbortError")), timeoutMs);
+  if (external) {
+    if (external.aborted) ctrl.abort(external.reason);
+    else external.addEventListener("abort", () => ctrl.abort(external.reason), { once: true });
+  }
+  return { signal: ctrl.signal, cancel: () => clearTimeout(t) };
+}
+
+function isAbort(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { name?: string }).name === "AbortError";
 }
 
 export async function generateSummaryWithOllama(
@@ -108,24 +129,28 @@ export async function generateSummaryWithOllama(
 ): Promise<string> {
   const baseUrl = (settings.url || "http://localhost:11434").replace(/\/+$/, "");
   const model = settings.model || "llama3.2";
-  const res = await fetch(`${baseUrl}/api/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      prompt,
-      stream: false,
-    }),
-    signal: opts.signal,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Ollama respondeu ${res.status}: ${text || res.statusText}`);
+  const { signal, cancel } = withTimeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.signal);
+  try {
+    const res = await fetch(`${baseUrl}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, prompt, stream: false }),
+      signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Ollama respondeu ${res.status}: ${text || res.statusText}`);
+    }
+    const data = await res.json();
+    const out = String(data?.response || "").trim();
+    if (!out) throw new Error("Resposta vazia do Ollama");
+    return out;
+  } catch (err) {
+    if (isAbort(err)) throw new Error(`Ollama timeout após ${(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000}s`);
+    throw err;
+  } finally {
+    cancel();
   }
-  const data = await res.json();
-  const out = String(data?.response || "").trim();
-  if (!out) throw new Error("Resposta vazia do Ollama");
-  return out;
 }
 
 export interface ChatMessage {
@@ -140,29 +165,42 @@ export async function chatWithOllama(
 ): Promise<string> {
   const baseUrl = (settings.url || "http://localhost:11434").replace(/\/+$/, "");
   const model = settings.model || "llama3.2";
-  const res = await fetch(`${baseUrl}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: false,
-    }),
-    signal: opts.signal,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Ollama respondeu ${res.status}: ${text || res.statusText}`);
+  const { signal, cancel } = withTimeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts.signal);
+  try {
+    const res = await fetch(`${baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages, stream: false }),
+      signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Ollama respondeu ${res.status}: ${text || res.statusText}`);
+    }
+    const data = await res.json();
+    const out = String(data?.message?.content || "").trim();
+    if (!out) throw new Error("Resposta vazia do Ollama");
+    return out;
+  } catch (err) {
+    if (isAbort(err)) throw new Error(`Ollama timeout após ${(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000}s`);
+    throw err;
+  } finally {
+    cancel();
   }
-  const data = await res.json();
-  const out = String(data?.message?.content || "").trim();
-  if (!out) throw new Error("Resposta vazia do Ollama");
-  return out;
 }
 
 export async function pingOllama(settings: OllamaSettings): Promise<string[]> {
   const baseUrl = (settings.url || "http://localhost:11434").replace(/\/+$/, "");
-  const res = await fetch(`${baseUrl}/api/tags`);
+  const { signal, cancel } = withTimeout(PING_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/tags`, { signal });
+  } catch (err) {
+    cancel();
+    if (isAbort(err)) throw new Error(`Ollama não respondeu em ${PING_TIMEOUT_MS / 1000}s`);
+    throw err;
+  }
+  cancel();
   if (!res.ok) throw new Error(`Ollama indisponível (${res.status})`);
   const data = await res.json();
   const models = Array.isArray(data?.models)
