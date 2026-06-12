@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import { useApp } from "../context/AppContext";
+import { Note } from "../types";
 import {
   FileText,
   ArrowLeft,
@@ -201,10 +202,64 @@ export const NotesView: React.FC = () => {
     if (note) await updateNote({ ...note, projectId: projId || null });
   };
 
-  const handleContentChange = async (newContent: string) => {
+  // --- Persistência com debounce de conteúdo/transcrição ---
+  // Salvar a cada keystroke serializava o banco INTEIRO via IPC + escrevia o
+  // db.json completo em disco, e o setDb re-renderizava o app todo — o editor
+  // travava visivelmente (pior ainda durante uma gravação). O Lexical/textarea
+  // guardam o próprio estado, então o db pode ficar ~700 ms atrás sem efeito
+  // visível. O flush acontece no timer, ao trocar de nota, ao desmontar e
+  // quando a janela perde o foco.
+  const dbRef = useRef(db);
+  dbRef.current = db;
+  const updateNoteRef = useRef(updateNote);
+  updateNoteRef.current = updateNote;
+  const pendingFieldsRef = useRef<{ noteId: string; fields: Partial<Note> } | null>(null);
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPendingFields = async () => {
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+    const pending = pendingFieldsRef.current;
+    pendingFieldsRef.current = null;
+    if (!pending) return;
+    // Busca a nota fresca: title/people/summaries podem ter mudado no meio
+    const note = dbRef.current.notes.find((n) => n.id === pending.noteId);
+    if (note) await updateNoteRef.current({ ...note, ...pending.fields });
+  };
+  const flushRef = useRef(flushPendingFields);
+  flushRef.current = flushPendingFields;
+
+  const queueNoteFields = (noteId: string, fields: Partial<Note>) => {
+    if (pendingFieldsRef.current && pendingFieldsRef.current.noteId !== noteId) {
+      void flushRef.current();
+    }
+    pendingFieldsRef.current = {
+      noteId,
+      fields: { ...pendingFieldsRef.current?.fields, ...fields },
+    };
+    if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+    pendingTimerRef.current = setTimeout(() => void flushRef.current(), 700);
+  };
+
+  // Flush ao trocar de nota e ao desmontar a view
+  useEffect(() => {
+    return () => {
+      void flushRef.current();
+    };
+  }, [selectedEntityId]);
+
+  // Flush quando a janela perde o foco (minimiza perda ao fechar o app)
+  useEffect(() => {
+    const onBlur = () => void flushRef.current();
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, []);
+
+  const handleContentChange = (newContent: string) => {
     if (!selectedEntityId) return;
-    const note = db.notes.find((n) => n.id === selectedEntityId);
-    if (note) await updateNote({ ...note, content: newContent });
+    queueNoteFields(selectedEntityId, { content: newContent });
   };
 
   const togglePersonParticipant = async (personId: string) => {
@@ -896,8 +951,8 @@ export const NotesView: React.FC = () => {
                   });
                 }}
                 transcript={selectedNote.transcript || ""}
-                onTranscriptChange={async (t) => {
-                  await updateNote({ ...selectedNote, transcript: t });
+                onTranscriptChange={(t) => {
+                  queueNoteFields(selectedNote.id, { transcript: t });
                 }}
                 audioFile={selectedNote.audioFile || ""}
               />

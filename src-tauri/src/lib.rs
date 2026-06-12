@@ -1,3 +1,6 @@
+mod mic_monitor;
+mod recorder;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -1513,6 +1516,7 @@ fn epoch_days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .manage(recorder::RecorderState(std::sync::Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1524,6 +1528,7 @@ pub fn run() {
                 let _ = fs::create_dir_all(&audio_dir);
                 let _ = app.asset_protocol_scope().allow_directory(&audio_dir, true);
             }
+            mic_monitor::spawn(handle.clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1563,7 +1568,11 @@ pub fn run() {
             backup_to_s3,
             list_s3_backups,
             restore_from_s3,
-            cleanup_old_audios
+            cleanup_old_audios,
+            recorder::start_recording,
+            recorder::stop_recording,
+            recorder::cancel_recording,
+            recorder::recording_status
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");

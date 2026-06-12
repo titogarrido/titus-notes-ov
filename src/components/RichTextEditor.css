@@ -1004,3 +1004,126 @@
 }
 
 /* Made with Bob */
+
+/* ----- Gravador de reunião ----- */
+
+.recorder-pulse-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #dc2626;
+  flex-shrink: 0;
+  animation: recorder-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes recorder-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.35); }
+  50% { opacity: 0.55; box-shadow: 0 0 0 5px rgba(220, 38, 38, 0); }
+}
+
+.recorder-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 6px;
+  background: white;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.recorder-btn:hover {
+  background: #f3f4f6;
+}
+
+.recorder-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.recorder-btn-record {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: white;
+}
+
+.recorder-btn-record:hover {
+  background: #b91c1c;
+}
+
+.recorder-btn-stop {
+  background: #111827;
+  border-color: #111827;
+  color: white;
+}
+
+.recorder-btn-stop:hover {
+  background: #1f2937;
+}
+
+.recorder-btn-discard {
+  border-color: #dc2626;
+  color: #dc2626;
+}
+
+.recorder-btn-discard:hover {
+  background: #fef2f2;
+}
+
+.recorder-source-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  flex-shrink: 0;
+}
+
+.recorder-select {
+  font-size: 11px;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border, #e0e0e0);
+  border-radius: 6px;
+  background: white;
+  color: #374151;
+  cursor: pointer;
+}
+
+.recording-tab-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.recording-tab-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #b91c1c;
+  color: white;
+  cursor: pointer;
+}
+
+.recording-tab-stop:hover {
+  background: #991b1b;
+}
