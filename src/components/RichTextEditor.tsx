@@ -1,7 +1,8 @@
 import React, { useRef, useState, useMemo, useCallback, useEffect } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./RichTextEditor.css";
-import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2 } from "lucide-react";
+import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2 } from "lucide-react";
 import { Summary, SummaryTemplate, OllamaSettings } from "../types";
 import { SummariesPanel } from "./SummariesPanel";
 import { NoteSidePanel } from "./lexical/NoteSidePanel";
@@ -140,6 +141,391 @@ const TranscriptAudioPlayer: React.FC<{ filename: string }> = ({ filename }) => 
   );
 };
 
+// ----- Gravador de reunião (mic + áudio do sistema → MP3 mono 16 kHz) -----
+//
+// A captura roda no backend Rust (cpal + ScreenCaptureKit). A nota recebe o
+// mp3 via evento global `recording-finished` tratado no AppContext — este
+// componente só comanda start/stop e reflete o estado.
+
+interface BackendRecordingStatus {
+  filename: string;
+  noteId: string;
+  elapsedSecs: number;
+  systemAudio: boolean;
+  warning: string | null;
+}
+
+import {
+  AUTO_STOP_STORAGE_KEY,
+  AUTO_STOP_OPTIONS,
+  loadAutoStopSecs,
+} from "../lib/recorderPrefs";
+
+function formatElapsed(total: number): string {
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// Evento DOM local para o MeetingRecorder e o indicador da barra de abas se
+// manterem em sincronia sem compartilhar estado React (cada um re-renderiza
+// sozinho, sem arrastar o editor junto).
+const RECORDING_CHANGED_EVENT = "titus-recording-changed";
+const notifyRecordingChanged = () => window.dispatchEvent(new Event(RECORDING_CHANGED_EVENT));
+
+/// Indicador compacto na barra de abas — visível em qualquer aba enquanto há
+/// gravação em andamento, com botão de parar quando a gravação é desta nota.
+const RecordingTabIndicator: React.FC<{ noteId: string }> = ({ noteId }) => {
+  const [rec, setRec] = useState<{ mine: boolean } | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+
+  const refresh = useCallback(() => {
+    invoke<BackendRecordingStatus | null>("recording_status")
+      .then((s) => {
+        if (!s) {
+          setRec(null);
+          return;
+        }
+        setElapsed(s.elapsedSecs);
+        setRec({ mine: s.noteId === noteId });
+      })
+      .catch(() => setRec(null));
+  }, [noteId]);
+
+  useEffect(() => {
+    refresh();
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const onChanged = () => refresh();
+    window.addEventListener(RECORDING_CHANGED_EVENT, onChanged);
+    [listen("recording-finished", onChanged), listen("recording-error", onChanged)].forEach((p) =>
+      p.then((u) => {
+        if (disposed) u();
+        else unlisteners.push(u);
+      }),
+    );
+    return () => {
+      disposed = true;
+      window.removeEventListener(RECORDING_CHANGED_EVENT, onChanged);
+      unlisteners.forEach((u) => u());
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!rec) return;
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [rec]);
+
+  if (!rec) return null;
+  return (
+    <span
+      className="recording-tab-indicator"
+      title={
+        rec.mine
+          ? "Gravação em andamento nesta nota (controles na aba Transcrição)"
+          : "Há uma gravação em andamento em outra nota"
+      }
+    >
+      <span className="recorder-pulse-dot" style={{ width: 8, height: 8 }} />
+      {rec.mine ? (
+        <>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatElapsed(elapsed)}</span>
+          <button
+            type="button"
+            className="recording-tab-stop"
+            title="Parar e salvar a gravação"
+            onClick={() => {
+              invoke("stop_recording")
+                .catch(() => {})
+                .finally(notifyRecordingChanged);
+            }}
+          >
+            <Square size={9} fill="currentColor" />
+          </button>
+        </>
+      ) : (
+        <span>gravando em outra nota</span>
+      )}
+    </span>
+  );
+};
+
+const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
+  const [state, setState] = useState<"idle" | "recording" | "other" | "busy">("idle");
+  const [elapsed, setElapsed] = useState(0);
+  const [level, setLevel] = useState(0);
+  const [maxLevel, setMaxLevel] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [systemAudio, setSystemAudio] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
+  const [autoStopSecs, setAutoStopSecs] = useState<number>(loadAutoStopSecs);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+
+  // Sincroniza com o backend ao montar — a gravação continua viva mesmo se o
+  // usuário trocar de aba/nota e voltar.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<BackendRecordingStatus | null>("recording_status")
+      .then((s) => {
+        if (cancelled || !s) return;
+        setElapsed(s.elapsedSecs);
+        setSystemAudio(s.systemAudio);
+        setWarning(s.warning);
+        setState(s.noteId === noteId ? "recording" : "other");
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [noteId]);
+
+  useEffect(() => {
+    if (state !== "recording") return;
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [state]);
+
+  useEffect(() => {
+    if (state !== "recording") return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen<{ level: number }>("recording-level", (e) => {
+      setLevel(e.payload.level);
+      setMaxLevel((m) => Math.max(m, e.payload.level));
+    }).then((u) => {
+      if (disposed) u();
+      else unlisten = u;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [state]);
+
+  // Fim/erro da gravação: sempre ativos — o auto-stop pode disparar a qualquer
+  // momento e o evento pode chegar depois do invoke de stop resolver.
+  // O AppContext anexa o mp3 à nota; aqui só refletimos o estado na UI.
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const track = (p: Promise<() => void>) =>
+      p.then((u) => {
+        if (disposed) u();
+        else unlisteners.push(u);
+      });
+    track(
+      listen<{ noteId: string; reason: string }>("recording-finished", (e) => {
+        if (e.payload.noteId !== noteId) return;
+        setState("idle");
+        setSavedNotice(
+          e.payload.reason === "auto"
+            ? "Gravação encerrada automaticamente (silêncio detectado) e anexada à nota."
+            : e.payload.reason === "meeting"
+            ? "Reunião encerrada — gravação salva e anexada à nota."
+            : "Gravação salva e anexada à nota.",
+        );
+      }),
+    );
+    track(
+      listen<{ noteId: string; message: string }>("recording-error", (e) => {
+        if (e.payload.noteId !== noteId) return;
+        setState("idle");
+        setError(e.payload.message);
+      }),
+    );
+    return () => {
+      disposed = true;
+      unlisteners.forEach((u) => u());
+    };
+  }, [noteId]);
+
+  const start = async () => {
+    setError(null);
+    setSavedNotice(null);
+    setState("busy");
+    try {
+      const status = await invoke<BackendRecordingStatus>("start_recording", {
+        noteId,
+        autoStopSecs,
+        systemAudio: true,
+      });
+      setElapsed(0);
+      setLevel(0);
+      setMaxLevel(0);
+      setConfirmDiscard(false);
+      setSystemAudio(status.systemAudio);
+      setWarning(status.warning);
+      setState("recording");
+      notifyRecordingChanged();
+    } catch (e: any) {
+      setError(String(e?.message || e));
+      setState("idle");
+    }
+  };
+
+  const stopAndSave = async () => {
+    setState("busy");
+    try {
+      await invoke("stop_recording");
+      setState("idle");
+    } catch (e: any) {
+      // Pode já ter sido finalizada pelo auto-stop — o evento cuida do resto
+      setState("idle");
+      if (!String(e?.message || e).includes("Nenhuma gravação")) {
+        setError(String(e?.message || e));
+      }
+    } finally {
+      notifyRecordingChanged();
+    }
+  };
+
+  const discard = async () => {
+    setConfirmDiscard(false);
+    setState("busy");
+    try {
+      await invoke("cancel_recording");
+    } catch {
+      // já encerrada — segue
+    }
+    setState("idle");
+    notifyRecordingChanged();
+  };
+
+  const changeAutoStop = (v: number) => {
+    setAutoStopSecs(v);
+    localStorage.setItem(AUTO_STOP_STORAGE_KEY, String(v));
+  };
+
+  const showMicHint = state === "recording" && elapsed >= 4 && maxLevel < 0.01;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+        padding: "8px 12px",
+        marginBottom: "10px",
+        border: "1px solid var(--color-border, #e0e0e0)",
+        background: state === "recording" ? "#fff5f5" : "#f8fafc",
+        borderRadius: "8px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+        {state === "recording" ? (
+          <>
+            <span className="recorder-pulse-dot" />
+            <span style={{ fontSize: "13px", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+              {formatElapsed(elapsed)}
+            </span>
+            <span className="recorder-source-badge" title={
+              systemAudio
+                ? "Capturando o microfone e o áudio do sistema (participantes remotos)"
+                : "Capturando apenas o microfone"
+            }>
+              {systemAudio ? "mic + sistema" : "só microfone"}
+            </span>
+            <div
+              style={{
+                flex: 1,
+                minWidth: "60px",
+                height: "6px",
+                borderRadius: "3px",
+                background: "#e5e7eb",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${Math.min(100, Math.round(level * 140))}%`,
+                  height: "100%",
+                  borderRadius: "3px",
+                  background: "#dc2626",
+                  transition: "width 120ms linear",
+                }}
+              />
+            </div>
+            <button type="button" className="recorder-btn recorder-btn-stop" onClick={stopAndSave}>
+              <Square size={12} fill="currentColor" /> Parar e salvar
+            </button>
+            {confirmDiscard ? (
+              <button type="button" className="recorder-btn recorder-btn-discard" onClick={discard}>
+                Confirmar descarte?
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="recorder-btn"
+                onClick={() => setConfirmDiscard(true)}
+                title="Descartar gravação"
+              >
+                <Trash2 size={12} /> Descartar
+              </button>
+            )}
+          </>
+        ) : state === "other" ? (
+          <span style={{ fontSize: "12px", color: "var(--color-text-muted)" }}>
+            <Mic size={12} style={{ verticalAlign: "-2px" }} /> Há uma gravação em andamento em
+            outra nota — finalize-a antes de gravar aqui.
+          </span>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="recorder-btn recorder-btn-record"
+              onClick={start}
+              disabled={state === "busy"}
+            >
+              <Mic size={13} /> {state === "busy" ? "Aguarde…" : "Gravar reunião"}
+            </button>
+            <select
+              className="recorder-select"
+              value={autoStopSecs}
+              onChange={(e) => changeAutoStop(Number(e.target.value))}
+              title="Encerra e salva sozinho quando a reunião termina"
+            >
+              {AUTO_STOP_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <span style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
+              mic + áudio do sistema · MP3 mono 16 kHz · ~14 MB/hora
+            </span>
+          </>
+        )}
+      </div>
+      {state === "recording" && autoStopSecs > 0 && (
+        <span style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
+          Para sozinha após {Math.round(autoStopSecs / 60)} min de silêncio contínuo.
+        </span>
+      )}
+      {state === "recording" && warning && (
+        <span style={{ fontSize: "11px", color: "#b45309" }}>
+          Gravando só o microfone — {warning}
+        </span>
+      )}
+      {showMicHint && (
+        <span style={{ fontSize: "11px", color: "#b45309" }}>
+          Nenhum sinal captado — verifique a permissão do microfone em Ajustes do Sistema →
+          Privacidade e Segurança → Microfone.
+        </span>
+      )}
+      {savedNotice && state === "idle" && (
+        <span style={{ fontSize: "12px", color: "#15803d" }}>{savedNotice}</span>
+      )}
+      {error && (
+        <span style={{ fontSize: "12px", color: "#cf222e" }}>Falha na gravação: {error}</span>
+      )}
+    </div>
+  );
+};
+
 // ------- helpers de extração a partir do JSON do Lexical -------
 
 interface ExtractedHeading {
@@ -248,6 +634,10 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   const transcriptEnabled = !!onTranscriptChange;
   const [tab, setTab] = useState<"content" | "transcript" | "summaries">("content");
   const [showSidePanel, setShowSidePanel] = useState(true);
+  // Estado local da transcrição: a persistência é debounced no NotesView, e
+  // uma textarea controlada pelo db "engoliria" teclas até o flush. O
+  // componente remonta por nota (key={note.id}), então iniciar do prop basta.
+  const [localTranscript, setLocalTranscript] = useState(transcript || "");
   // Guarda em ref para NÃO causar re-render a cada keystroke (isso quebrava o
   // plugin de menção "@" que recebia novas referências de props e resetava
   // o estado interno). O display é atualizado por um tick.
@@ -503,17 +893,19 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             </button>
           )}
 
-          {hasContextPanel && tab === "content" && (
-            <button
-              type="button"
-              className="editor-tab editor-tab-toggle"
-              onClick={() => setShowSidePanel((v) => !v)}
-              title={showSidePanel ? "Esconder painel" : "Mostrar painel"}
-              style={{ marginLeft: "auto" }}
-            >
-              {showSidePanel ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
-            </button>
-          )}
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+            {noteId && <RecordingTabIndicator noteId={noteId} />}
+            {hasContextPanel && tab === "content" && (
+              <button
+                type="button"
+                className="editor-tab editor-tab-toggle"
+                onClick={() => setShowSidePanel((v) => !v)}
+                title={showSidePanel ? "Esconder painel" : "Mostrar painel"}
+              >
+                {showSidePanel ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -521,7 +913,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         <SummariesPanel
           noteTitle={noteTitle || ""}
           noteContent={value}
-          transcript={transcript}
+          transcript={localTranscript}
           summaries={summaries!}
           templates={templates!}
           settings={settings!}
@@ -551,13 +943,17 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
               </p>
             </div>
             <div style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
-              {(transcript || "").length.toLocaleString("pt-BR")} caracteres
+              {localTranscript.length.toLocaleString("pt-BR")} caracteres
             </div>
           </div>
+          {noteId && <MeetingRecorder noteId={noteId} />}
           {audioFile && <TranscriptAudioPlayer filename={audioFile} />}
           <textarea
-            value={transcript || ""}
-            onChange={(e) => onTranscriptChange?.(e.target.value)}
+            value={localTranscript}
+            onChange={(e) => {
+              setLocalTranscript(e.target.value);
+              onTranscriptChange?.(e.target.value);
+            }}
             placeholder="Cole a transcrição da reunião aqui..."
             spellCheck={false}
             style={{
@@ -634,7 +1030,9 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
                   }}
                 />
 
-                <OnChangePlugin onChange={handleEditorChange} />
+                {/* ignoreSelectionChange: sem isso, cada movimento de cursor
+                    serializava o documento inteiro e disparava um save */}
+                <OnChangePlugin onChange={handleEditorChange} ignoreSelectionChange />
               </div>
             </div>
           </LexicalComposer>

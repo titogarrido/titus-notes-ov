@@ -1,4 +1,5 @@
 import React from "react";
+import { Mic, X } from "lucide-react";
 import { AppProvider, useApp } from "./context/AppContext";
 import { Sidebar } from "./components/Sidebar";
 import { SearchModal } from "./components/SearchModal";
@@ -11,6 +12,74 @@ import { ProjectsView } from "./views/ProjectsView";
 import { NotesView } from "./views/NotesView";
 import { SettingsView } from "./views/SettingsView";
 import "./App.css";
+
+// Banner flutuante: um app de reunião (Teams, Zoom, Meet…) começou a usar o
+// microfone — oferece criar uma nota e gravar. Some sozinho quando a reunião
+// termina (evento meeting-ended) ou ao dispensar.
+const MeetingBanner: React.FC = () => {
+  const { meetingPrompt, acceptMeetingRecording, dismissMeetingPrompt } = useApp();
+  if (!meetingPrompt) return null;
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: "16px",
+        right: "16px",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        gap: "12px",
+        padding: "12px 14px",
+        background: "white",
+        border: "1px solid #e0e0e0",
+        borderLeft: "4px solid #dc2626",
+        borderRadius: "10px",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+        maxWidth: "420px",
+      }}
+    >
+      <Mic size={18} style={{ color: "#dc2626", flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: "13px", fontWeight: 700 }}>Reunião detectada</div>
+        <div style={{ fontSize: "12px", color: "var(--color-text-muted)" }}>
+          {meetingPrompt.appName} está usando o microfone. Gravar a reunião numa nova nota?
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => void acceptMeetingRecording()}
+        style={{
+          padding: "6px 12px",
+          border: "none",
+          borderRadius: "6px",
+          background: "#dc2626",
+          color: "white",
+          fontSize: "12px",
+          fontWeight: 700,
+          cursor: "pointer",
+          whiteSpace: "nowrap",
+        }}
+      >
+        Gravar
+      </button>
+      <button
+        type="button"
+        onClick={dismissMeetingPrompt}
+        title="Agora não"
+        style={{
+          padding: "4px",
+          border: "none",
+          background: "transparent",
+          color: "var(--color-text-muted)",
+          cursor: "pointer",
+          display: "flex",
+        }}
+      >
+        <X size={16} />
+      </button>
+    </div>
+  );
+};
 
 const MainLayout: React.FC = () => {
   const { currentView, loading } = useApp();
@@ -87,6 +156,9 @@ const MainLayout: React.FC = () => {
 
       {/* Spotlight Global Search Modal overlay */}
       <SearchModal />
+
+      {/* Reunião detectada — oferta de gravação */}
+      <MeetingBanner />
     </div>
   );
 };

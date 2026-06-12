@@ -31,4 +31,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "stream"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
+cpal = "0.15"
+mp3lame-encoder = "0.2"
+screencapturekit = { version = "7", features = ["macos_13_0"] }
 

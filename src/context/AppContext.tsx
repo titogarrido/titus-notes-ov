@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Database,
   Person,
@@ -15,6 +16,12 @@ import {
   AudioCleanupResult,
 } from "../types";
 import { buildImportReport, ImportReport } from "../lib/hyprnoteImport";
+import { loadAutoStopSecs } from "../lib/recorderPrefs";
+
+export interface MeetingPrompt {
+  appName: string;
+  bundleId: string;
+}
 
 const DEFAULT_SETTINGS: OllamaSettings = {
   url: "http://localhost:11434",
@@ -94,7 +101,12 @@ interface AppContextType {
   setSelectedEntityId: (id: string | null) => void;
   searchOpen: boolean;
   setSearchOpen: (open: boolean) => void;
-  
+
+  // Detecção de reunião (app externo usando o microfone)
+  meetingPrompt: MeetingPrompt | null;
+  acceptMeetingRecording: () => Promise<void>;
+  dismissMeetingPrompt: () => void;
+
   // Database CRUD Actions
   saveDatabase: (mutator: (prev: Database) => Database) => Promise<void>;
   
@@ -259,6 +271,121 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     saveQueueRef.current = next;
     return next;
   };
+
+  // --- Detecção de reunião: app externo começou/parou de usar o microfone ---
+  // O backend (mic_monitor) emite `meeting-started` quando Teams/Zoom/Meet etc.
+  // abre o microfone, e `meeting-ended` quando solta. Aqui oferecemos a
+  // gravação via banner; o encerramento da gravação em si é feito no backend.
+  const [meetingPrompt, setMeetingPrompt] = useState<MeetingPrompt | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const track = (p: Promise<() => void>) =>
+      p.then((u) => {
+        if (disposed) u();
+        else unlisteners.push(u);
+      });
+    track(
+      listen<MeetingPrompt>("meeting-started", async (e) => {
+        // Já gravando? Então não há o que oferecer.
+        try {
+          const status = await invoke<unknown>("recording_status");
+          if (status) return;
+        } catch {
+          // segue com o prompt mesmo sem status
+        }
+        setMeetingPrompt(e.payload);
+      }),
+    );
+    track(
+      listen<MeetingPrompt>("meeting-ended", () => {
+        setMeetingPrompt(null);
+      }),
+    );
+    return () => {
+      disposed = true;
+      unlisteners.forEach((u) => u());
+    };
+  }, []);
+
+  const dismissMeetingPrompt = () => setMeetingPrompt(null);
+
+  // Aceitar = criar uma nota para a reunião, abrir e começar a gravar nela.
+  const acceptMeetingRecording = async () => {
+    const prompt = meetingPrompt;
+    if (!prompt) return;
+    setMeetingPrompt(null);
+    const now = new Date();
+    const dateOnly = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
+      now.getDate(),
+    ).padStart(2, "0")}`;
+    const time = now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    const id = await addNote({
+      title: `Reunião ${prompt.appName} — ${time}`,
+      content: "",
+      date: dateOnly,
+      projectId: null,
+      peopleIds: [],
+    });
+    setSelectedEntityId(id);
+    setCurrentView("notas");
+    try {
+      await invoke("start_recording", {
+        noteId: id,
+        autoStopSecs: loadAutoStopSecs(),
+        systemAudio: true,
+        stopOnMeetingEnd: true,
+      });
+    } catch (err) {
+      console.error("Falha ao iniciar a gravação da reunião:", err);
+    }
+  };
+
+  // --- Gravação de reunião: fonte única de verdade para anexar o áudio ---
+  // O backend emite `recording-finished` tanto no stop manual quanto no
+  // auto-stop por silêncio — assim a nota recebe o mp3 mesmo que o usuário
+  // esteja em outra tela (ou em outra nota) quando a gravação termina.
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    listen<{ noteId: string; filename: string; reason: string }>(
+      "recording-finished",
+      async (e) => {
+        const { noteId, filename } = e.payload;
+        let oldAudio = "";
+        let oldAudioUsedElsewhere = false;
+        await saveDatabase((prev) => {
+          const target = prev.notes.find((n) => n.id === noteId);
+          oldAudio = target?.audioFile || "";
+          oldAudioUsedElsewhere = prev.notes.some(
+            (n) => n.id !== noteId && n.audioFile === oldAudio,
+          );
+          return {
+            ...prev,
+            notes: prev.notes.map((n) =>
+              n.id === noteId ? { ...n, audioFile: filename } : n,
+            ),
+          };
+        });
+        if (oldAudio && oldAudio !== filename && !oldAudioUsedElsewhere) {
+          try {
+            await invoke("delete_audios", { filenames: [oldAudio] });
+          } catch (err) {
+            console.error("Erro ao remover áudio antigo:", err);
+          }
+        }
+      },
+    ).then((u) => {
+      if (disposed) u();
+      else unlisteners.push(u);
+    });
+    return () => {
+      disposed = true;
+      unlisteners.forEach((u) => u());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // --- COMPANIES CRUD ---
   const addCompany = async (data: Omit<Company, "id">): Promise<string> => {
@@ -721,6 +848,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         loading,
         currentView,
         setCurrentView,
+        meetingPrompt,
+        acceptMeetingRecording,
+        dismissMeetingPrompt,
         selectedEntityId,
         setSelectedEntityId,
         searchOpen,
