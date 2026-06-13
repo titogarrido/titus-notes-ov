@@ -10,12 +10,16 @@ import {
   CheckSquare,
   CalendarDays,
   AlertTriangle,
+  Plus,
+  X,
 } from "lucide-react";
 
 type FilterMode = "all" | "notes" | "tasks" | "open-tasks";
 
 export const CalendarView: React.FC = () => {
-  const { db, setCurrentView, setSelectedEntityId } = useApp();
+  const { db, setCurrentView, setSelectedEntityId, addNote, addTask } = useApp();
+  const [openDay, setOpenDay] = useState<number | null>(null);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
 
   const today = new Date();
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -91,6 +95,34 @@ export const CalendarView: React.FC = () => {
   const handleTaskClick = () => {
     setSelectedEntityId(null);
     setCurrentView("tarefas");
+  };
+
+  const handleNewNoteOnDay = async (day: number) => {
+    const id = await addNote({
+      title: "Nova Nota",
+      content: "",
+      date: fmtDay(day),
+      projectId: null,
+      peopleIds: [],
+    });
+    setOpenDay(null);
+    if (id) {
+      setSelectedEntityId(id);
+      setCurrentView("notas");
+    }
+  };
+
+  const handleNewTaskOnDay = async (day: number) => {
+    const title = newTaskTitle.trim();
+    if (!title) return;
+    await addTask({
+      title,
+      completed: false,
+      dueDate: fmtDay(day),
+      projectId: null,
+      personId: null,
+    });
+    setNewTaskTitle("");
   };
 
   const MAX_VISIBLE_PER_DAY = 3;
@@ -250,6 +282,9 @@ export const CalendarView: React.FC = () => {
             return (
               <div
                 key={`day-${day}`}
+                className="calendar-day-cell"
+                onClick={() => setOpenDay(day)}
+                title={`${day}/${month + 1} — clique para ver e adicionar`}
                 style={{
                   padding: "6px 7px",
                   borderRight: "1px solid var(--border-color)",
@@ -259,6 +294,7 @@ export const CalendarView: React.FC = () => {
                   flexDirection: "column",
                   gap: 4,
                   overflow: "hidden",
+                  cursor: "pointer",
                   backgroundColor: isToday
                     ? "#fff7e6"
                     : isWeekend
@@ -303,7 +339,10 @@ export const CalendarView: React.FC = () => {
                       return (
                         <button
                           key={`n-${it.id}`}
-                          onClick={() => handleNoteClick(it.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleNoteClick(it.id);
+                          }}
                           style={{
                             display: "flex",
                             alignItems: "center",
@@ -342,7 +381,10 @@ export const CalendarView: React.FC = () => {
                     return (
                       <button
                         key={`t-${it.id}`}
-                        onClick={handleTaskClick}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleTaskClick();
+                        }}
                         style={{
                           display: "flex",
                           alignItems: "center",
@@ -375,9 +417,9 @@ export const CalendarView: React.FC = () => {
                   })}
                   {hidden > 0 && (
                     <button
-                      onClick={() => {
-                        if (dayNotes[0]) handleNoteClick(dayNotes[0].id);
-                        else handleTaskClick();
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenDay(day);
                       }}
                       style={{
                         fontSize: 10,
@@ -389,10 +431,7 @@ export const CalendarView: React.FC = () => {
                         cursor: "pointer",
                         fontWeight: 600,
                       }}
-                      title={items
-                        .slice(MAX_VISIBLE_PER_DAY)
-                        .map((i) => `${i.kind === "note" ? "📝" : "✓"} ${i.title}`)
-                        .join("\n")}
+                      title="Ver todos os itens deste dia"
                     >
                       +{hidden} mais
                     </button>
@@ -423,7 +462,158 @@ export const CalendarView: React.FC = () => {
           Concluída
         </span>
       </div>
+
+      {/* Popover/modal do dia: ver itens + adicionar nota/tarefa na data */}
+      {openDay !== null && (() => {
+        const { notes: dayNotes, tasks: dayTasks } = (() => {
+          const key = fmtDay(openDay);
+          return {
+            notes: db.notes.filter((n) => n.date === key),
+            tasks: db.tasks.filter((t) => t.dueDate === key),
+          };
+        })();
+        return (
+          <div
+            className="modal-overlay"
+            onClick={() => {
+              setOpenDay(null);
+              setNewTaskTitle("");
+            }}
+          >
+            <div
+              className="modal-content"
+              onClick={(e) => e.stopPropagation()}
+              style={{ maxWidth: 460, width: "100%", padding: 0, overflow: "hidden" }}
+            >
+              {/* Header */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "14px 18px",
+                  borderBottom: "1px solid var(--border-color)",
+                }}
+              >
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Calendar size={16} />
+                  {openDay} de {monthNames[month]} {year}
+                </h3>
+                <button
+                  className="btn-icon"
+                  onClick={() => {
+                    setOpenDay(null);
+                    setNewTaskTitle("");
+                  }}
+                  title="Fechar"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Ações de criação */}
+              <div style={{ padding: "12px 18px", display: "flex", flexDirection: "column", gap: 8, borderBottom: "1px solid var(--border-color)" }}>
+                <button
+                  className="btn-secondary"
+                  onClick={() => handleNewNoteOnDay(openDay)}
+                  style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center" }}
+                >
+                  <FileText size={14} /> Nova nota nesta data
+                </button>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleNewTaskOnDay(openDay);
+                  }}
+                  style={{ display: "flex", gap: 6 }}
+                >
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={newTaskTitle}
+                    onChange={(e) => setNewTaskTitle(e.target.value)}
+                    placeholder="Nova tarefa para este dia…"
+                    autoFocus
+                    style={{ flex: 1, height: 34, fontSize: 13 }}
+                  />
+                  <button
+                    type="submit"
+                    className="btn-primary"
+                    disabled={!newTaskTitle.trim()}
+                    style={{ display: "flex", alignItems: "center", gap: 4 }}
+                    title="Adicionar tarefa"
+                  >
+                    <Plus size={14} />
+                  </button>
+                </form>
+              </div>
+
+              {/* Itens do dia */}
+              <div style={{ maxHeight: 320, overflowY: "auto", padding: "8px 10px" }}>
+                {dayNotes.length === 0 && dayTasks.length === 0 ? (
+                  <div style={{ padding: "20px", textAlign: "center", fontSize: 13, color: "var(--color-text-muted)" }}>
+                    Nada agendado neste dia ainda.
+                  </div>
+                ) : (
+                  <>
+                    {dayNotes.map((n) => (
+                      <button
+                        key={n.id}
+                        onClick={() => handleNoteClick(n.id)}
+                        style={dayItemStyle}
+                      >
+                        <FileText size={14} style={{ color: "var(--color-badge-orange)", flexShrink: 0 }} />
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {n.title || "Sem título"}
+                        </span>
+                      </button>
+                    ))}
+                    {dayTasks.map((t) => {
+                      const overdue = !t.completed && new Date(t.dueDate) < startOfToday;
+                      return (
+                        <button key={t.id} onClick={handleTaskClick} style={dayItemStyle}>
+                          {overdue ? (
+                            <AlertTriangle size={14} style={{ color: "#cf222e", flexShrink: 0 }} />
+                          ) : (
+                            <CheckSquare size={14} style={{ color: t.completed ? "var(--color-text-muted)" : "var(--color-badge-blue)", flexShrink: 0 }} />
+                          )}
+                          <span
+                            style={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              textDecoration: t.completed ? "line-through" : "none",
+                              color: t.completed ? "var(--color-text-muted)" : undefined,
+                            }}
+                          >
+                            {t.title}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
+
+const dayItemStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  padding: "8px 10px",
+  border: "none",
+  background: "transparent",
+  cursor: "pointer",
+  textAlign: "left",
+  fontSize: 13,
+  borderRadius: 6,
+};
+
 export default CalendarView;

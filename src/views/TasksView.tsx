@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useApp } from "../context/AppContext";
-import { CheckSquare, Plus, Trash2, Check, Search, X } from "lucide-react";
+import { CheckSquare, Plus, Trash2, Check, Search, X, AlertTriangle } from "lucide-react";
 import { Task } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 
@@ -19,9 +19,18 @@ const formatDateBR = (iso: string): string => {
   return `${d}/${m}/${y}`;
 };
 
+// String local YYYY-MM-DD de hoje (compara lexicograficamente == cronologicamente)
+const todayStrLocal = (): string => {
+  const t = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+};
+
 export const TasksView: React.FC = () => {
   const { db, addTask, updateTask, deleteTask } = useApp();
-  
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const todayStr = todayStrLocal();
+
   // Quick task state
   const [title, setTitle] = useState("");
   const [dueDate, setDueDate] = useState(new Date().toISOString().split("T")[0]);
@@ -109,10 +118,11 @@ export const TasksView: React.FC = () => {
       personId: personId || null,
     });
 
-    // Reset fields
+    // Reset fields e mantém o foco para cadastrar várias em sequência
     setTitle("");
     setProjectId("");
     setPersonId("");
+    titleInputRef.current?.focus();
   };
 
   const handleToggle = async (task: Task) => {
@@ -138,11 +148,28 @@ export const TasksView: React.FC = () => {
     : null;
 
   // Filter tasks
-  const filteredTasks = db.tasks.filter((t) => {
-    if (filter === "pending") return !t.completed;
-    if (filter === "completed") return t.completed;
-    return true;
-  });
+  const filteredTasks = db.tasks
+    .filter((t) => {
+      if (filter === "pending") return !t.completed;
+      if (filter === "completed") return t.completed;
+      return true;
+    })
+    .sort((a, b) => {
+      // Pendentes antes de concluídas
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      if (a.completed) {
+        // Concluídas: mais recentes primeiro
+        return (b.dueDate || "").localeCompare(a.dueDate || "");
+      }
+      // Pendentes: vencimento mais próximo/atrasado primeiro; sem data por último
+      if (!a.dueDate) return 1;
+      if (!b.dueDate) return -1;
+      return a.dueDate.localeCompare(b.dueDate);
+    });
+
+  const overdueCount = db.tasks.filter(
+    (t) => !t.completed && t.dueDate && t.dueDate < todayStr,
+  ).length;
 
   return (
     <div className="view-container">
@@ -155,6 +182,11 @@ export const TasksView: React.FC = () => {
           </h1>
           <p className="welcome-subtitle" style={{ marginTop: "4px" }}>
             Gerencie e acompanhe seus afazeres e ações de reuniões do dia-a-dia.
+            {overdueCount > 0 && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, color: "#cf222e", fontWeight: 600 }}>
+                <AlertTriangle size={12} /> {overdueCount} atrasada{overdueCount === 1 ? "" : "s"}
+              </span>
+            )}
           </p>
         </div>
 
@@ -187,6 +219,7 @@ export const TasksView: React.FC = () => {
       {/* Quick Task Bar Form */}
       <form onSubmit={handleAddTask} className="quick-task-bar">
         <input
+          ref={titleInputRef}
           type="text"
           className="quick-task-input"
           placeholder="Nova tarefa..."
@@ -248,6 +281,7 @@ export const TasksView: React.FC = () => {
             const isEditingDate = inlineEdit?.taskId === task.id && inlineEdit.field === "date";
             const isEditingPerson = inlineEdit?.taskId === task.id && inlineEdit.field === "person";
             const isEditingProject = inlineEdit?.taskId === task.id && inlineEdit.field === "project";
+            const isOverdue = !task.completed && !!task.dueDate && task.dueDate < todayStr;
 
             const editableStyle: React.CSSProperties = {
               cursor: "text",
@@ -394,12 +428,22 @@ export const TasksView: React.FC = () => {
                     <span
                       className="task-due-date"
                       onClick={() => startEdit(task, "date")}
-                      title="Clique para alterar a data"
-                      style={{ cursor: "pointer", ...editableStyle }}
+                      title={isOverdue ? "Tarefa atrasada — clique para alterar a data" : "Clique para alterar a data"}
+                      style={{
+                        cursor: "pointer",
+                        ...editableStyle,
+                        color: isOverdue ? "#cf222e" : undefined,
+                        fontWeight: isOverdue ? 700 : undefined,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                      }}
                       onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = "#f1f3f5")}
                       onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "transparent")}
                     >
-                      Vencimento: {formatDateBR(task.dueDate)}
+                      {isOverdue && <AlertTriangle size={12} />}
+                      {isOverdue ? "Atrasada: " : "Vencimento: "}
+                      {formatDateBR(task.dueDate)}
                     </span>
                   )}
 

@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useState } from "react";
+import { exit } from "@tauri-apps/plugin-process";
 import { useApp } from "../context/AppContext";
 import {
   LayoutDashboard,
@@ -13,9 +14,11 @@ import {
   Plus,
   Search,
 } from "lucide-react";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 export const Sidebar: React.FC = () => {
   const { currentView, setCurrentView, addNote, setSelectedEntityId, setSearchOpen, db } = useApp();
+  const [confirmQuit, setConfirmQuit] = useState(false);
 
   const profileName = db.profile?.name?.trim() || "Unnamed";
   const profileAvatar = db.profile?.avatarUrl?.trim() || null;
@@ -55,8 +58,12 @@ export const Sidebar: React.FC = () => {
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
-        {/* Workspace info */}
-        <div className="workspace-profile" onClick={() => handleNavClick("painel")}>
+        {/* Workspace info — abre o perfil em Configurações */}
+        <div
+          className="workspace-profile"
+          onClick={() => handleNavClick("configuracoes")}
+          title="Abrir configurações do perfil"
+        >
           {profileAvatar ? (
             <img src={profileAvatar} alt={profileName} className="workspace-avatar" />
           ) : (
@@ -80,7 +87,7 @@ export const Sidebar: React.FC = () => {
             <span className="workspace-user-name">{profileName}</span>
             <span className="workspace-label">WORKSPACE</span>
           </div>
-          <span style={{ fontSize: "10px", color: "var(--color-text-muted)" }}>▼</span>
+          <Settings size={13} style={{ color: "var(--color-text-muted)", flexShrink: 0 }} />
         </div>
 
         {/* Action Button */}
@@ -126,11 +133,22 @@ export const Sidebar: React.FC = () => {
           <Settings className="nav-icon" />
           <span>Configurações</span>
         </button>
-        <button className="nav-item" onClick={() => alert(`Até logo, ${profileName}!`)}>
+        <button className="nav-item" onClick={() => setConfirmQuit(true)}>
           <LogOut className="nav-icon" />
           <span>Sair</span>
         </button>
       </div>
+
+      <ConfirmDialog
+        open={confirmQuit}
+        title="Sair do Titus Notes?"
+        message="O aplicativo será encerrado. Suas alterações já foram salvas automaticamente."
+        confirmLabel="Sair"
+        onConfirm={() => {
+          void exit(0);
+        }}
+        onCancel={() => setConfirmQuit(false)}
+      />
     </aside>
   );
 };
