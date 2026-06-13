@@ -15,6 +15,9 @@ import {
   Sparkles,
   RefreshCw,
   AlertTriangle,
+  X,
+  Users,
+  UserPlus,
 } from "lucide-react";
 import { RichTextEditor } from "../components/RichTextEditor";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -126,6 +129,7 @@ export const ProjectsView: React.FC = () => {
     deleteProject,
     setCurrentView,
     addNote,
+    addPerson,
     updateTask,
   } = useApp();
 
@@ -133,6 +137,11 @@ export const ProjectsView: React.FC = () => {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [peopleIds, setPeopleIds] = useState<string[]>([]);
+  const [createStatus, setCreateStatus] = useState<ProjectStatus>("em-andamento");
+  const [peopleSearch, setPeopleSearch] = useState("");
+  const [creatingPerson, setCreatingPerson] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const nameInputRef = React.useRef<HTMLInputElement>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
   // List view controls
@@ -145,17 +154,62 @@ export const ProjectsView: React.FC = () => {
 
   const handleOpenCreate = () => {
     setName("");
-    setDescription("# Novo Projeto\n\nDescreva os objetivos, pautas e informações gerais do projeto aqui...");
+    setDescription("");
     setPeopleIds([]);
+    setCreateStatus("em-andamento");
+    setPeopleSearch("");
     setIsCreating(true);
   };
 
+  // Foca o campo Nome ao abrir o formulário (o editor de descrição não rouba
+  // mais o foco — passamos autoFocus={false} a ele).
+  React.useEffect(() => {
+    if (isCreating) {
+      const id = requestAnimationFrame(() => nameInputRef.current?.focus());
+      return () => cancelAnimationFrame(id);
+    }
+  }, [isCreating]);
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    await addProject({ name: name.trim(), description, peopleIds });
-    setIsCreating(false);
-    setSelectedEntityId(null);
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    try {
+      const newId = await addProject({
+        name: name.trim(),
+        description,
+        peopleIds,
+        status: createStatus,
+      });
+      setIsCreating(false);
+      // Abre o projeto recém-criado em vez de voltar para a lista.
+      setSelectedEntityId(newId);
+      setTab("overview");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Cria uma pessoa na hora a partir da busca e já a aloca no projeto, sem sair
+  // do formulário (mesmo padrão da tela de notas).
+  const handleQuickCreatePerson = async (personName: string) => {
+    const trimmed = personName.trim();
+    if (!trimmed || creatingPerson) return;
+    setCreatingPerson(true);
+    try {
+      const newId = await addPerson({
+        name: trimmed,
+        role: "",
+        email: "",
+        department: "",
+        managerId: null,
+        isContact: true,
+      });
+      setPeopleIds((prev) => (prev.includes(newId) ? prev : [...prev, newId]));
+      setPeopleSearch("");
+    } finally {
+      setCreatingPerson(false);
+    }
   };
 
   const handleDescriptionChange = async (newDesc: string) => {
@@ -611,55 +665,339 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
 
   // ============== CREATE VIEW ==============
   if (isCreating) {
+    const peopleQuery = peopleSearch.trim().toLowerCase();
+    const filteredPeople = db.people.filter(
+      (p) =>
+        !peopleQuery ||
+        p.name.toLowerCase().includes(peopleQuery) ||
+        (p.role || "").toLowerCase().includes(peopleQuery),
+    );
+    const hasExactPerson = db.people.some((p) => p.name.toLowerCase() === peopleQuery);
+    const canQuickCreatePerson = peopleQuery.length > 0 && !hasExactPerson;
+    const nameValid = name.trim().length > 0;
+
     return (
-      <div className="view-container">
-        <button className="btn-secondary" style={{ marginBottom: "20px" }} onClick={() => setIsCreating(false)}>
+      <div
+        className="view-container"
+        style={{ display: "flex", flexDirection: "column", height: "100%" }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setIsCreating(false);
+          } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && nameValid) {
+            e.preventDefault();
+            void handleCreate(e as unknown as React.FormEvent);
+          }
+        }}
+      >
+        <button className="btn-secondary" style={{ marginBottom: "20px", flexShrink: 0, alignSelf: "flex-start" }} onClick={() => setIsCreating(false)}>
           <ArrowLeft size={12} style={{ marginRight: "4px" }} /> Voltar
         </button>
-        <div className="pane-card" style={{ maxWidth: "700px", margin: "0 auto" }}>
-          <h2 className="pane-title">Criar Novo Projeto</h2>
-          <form onSubmit={handleCreate}>
-            <div className="form-group">
-              <label>Nome do Projeto</label>
+        <div
+          className="pane-card"
+          style={{ width: "100%", margin: "0 auto", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                background: "var(--bg-sidebar)",
+                color: "var(--color-text-main)",
+                flexShrink: 0,
+              }}
+            >
+              <Folder size={18} />
+            </div>
+            <div>
+              <h2 className="pane-title" style={{ margin: 0 }}>Criar novo projeto</h2>
+              <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--color-text-muted)" }}>
+                Um workspace para agrupar notas, tarefas e pessoas.
+              </p>
+            </div>
+          </div>
+
+          <form
+            onSubmit={handleCreate}
+            style={{ marginTop: 18, flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+          >
+            {/* Linha superior: nome + status lado a lado (aproveita a largura) */}
+            <div style={{ display: "flex", gap: 28, flexWrap: "wrap", alignItems: "flex-start" }}>
+              <div className="form-group" style={{ flex: "1 1 320px", minWidth: 280 }}>
+              <label>Nome do projeto</label>
               <input
+                ref={nameInputRef}
                 type="text"
                 className="form-input"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="ex. Watson X - Migration"
+                placeholder="ex. Watson X — Migração"
                 required
               />
             </div>
-            <div className="form-group">
-              <label>Alocação de Integrantes</label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", border: "1px solid var(--border-color)", padding: "12px", borderRadius: "var(--border-radius-md)", maxHeight: "150px", overflowY: "auto" }}>
-                {db.people.map((p) => {
-                  const isChecked = peopleIds.includes(p.id);
+
+            <div className="form-group" style={{ flex: "1 1 360px", minWidth: 300 }}>
+              <label>Status inicial</label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {(Object.keys(STATUS_LABELS) as ProjectStatus[]).map((s) => {
+                  const active = createStatus === s;
+                  const c = STATUS_COLORS[s];
                   return (
-                    <label key={p.id} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", background: isChecked ? "var(--bg-active-sidebar)" : "var(--bg-sidebar)", padding: "4px 8px", borderRadius: "4px", cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => {
-                          setPeopleIds(isChecked ? peopleIds.filter((id) => id !== p.id) : [...peopleIds, p.id]);
-                        }}
-                      />
-                      <span>{p.name}</span>
-                    </label>
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setCreateStatus(s)}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "5px 12px",
+                        borderRadius: 999,
+                        border: `1px solid ${active ? c.dot : "var(--border-color)"}`,
+                        background: active ? c.bg : "var(--bg-card)",
+                        color: active ? c.fg : "var(--color-text-main)",
+                        fontSize: 12,
+                        fontWeight: active ? 700 : 500,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span className="proj-status-dot" style={{ background: c.dot }} />
+                      {STATUS_LABELS[s]}
+                    </button>
                   );
                 })}
               </div>
             </div>
-            <div className="form-group">
-              <label>Descrição do Projeto</label>
-              <RichTextEditor value={description} onChange={setDescription} />
             </div>
-            <div className="form-actions">
+            {/* fim da linha superior */}
+
+            <div className="form-group">
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Users size={13} style={{ color: "var(--color-text-muted)" }} />
+                Integrantes
+                {peopleIds.length > 0 && (
+                  <span style={{ fontWeight: 500, color: "var(--color-text-muted)" }}>
+                    · {peopleIds.length} selecionada{peopleIds.length === 1 ? "" : "s"}
+                  </span>
+                )}
+              </label>
+
+              {/* Chips das pessoas já selecionadas */}
+              {peopleIds.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {peopleIds.map((id) => {
+                    const p = db.people.find((x) => x.id === id);
+                    if (!p) return null;
+                    return (
+                      <span
+                        key={id}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "3px 6px 3px 4px",
+                          background: "var(--bg-active-sidebar, #e8eaed)",
+                          borderRadius: 999,
+                          fontSize: 12,
+                          fontWeight: 500,
+                        }}
+                      >
+                        <span className="profile-avatar" style={{ width: 20, height: 20, fontSize: 8 }}>
+                          {initialsOf(p.name)}
+                        </span>
+                        {p.name}
+                        <button
+                          type="button"
+                          onClick={() => setPeopleIds((prev) => prev.filter((x) => x !== id))}
+                          title="Remover"
+                          style={{
+                            display: "flex",
+                            border: "none",
+                            background: "transparent",
+                            cursor: "pointer",
+                            color: "var(--color-text-muted)",
+                            padding: 1,
+                          }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Busca */}
+              <div style={{ position: "relative", marginBottom: 6 }}>
+                <Search
+                  size={13}
+                  style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--color-text-muted)" }}
+                />
+                <input
+                  type="text"
+                  className="form-input"
+                  value={peopleSearch}
+                  onChange={(e) => setPeopleSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      // Não submete o formulário; cria pessoa se aplicável.
+                      e.preventDefault();
+                      if (canQuickCreatePerson) void handleQuickCreatePerson(peopleSearch);
+                    }
+                  }}
+                  placeholder={db.people.length ? "Buscar ou criar pessoa..." : "Criar a primeira pessoa..."}
+                  style={{ paddingLeft: 30, fontSize: 13 }}
+                />
+              </div>
+
+              {/* Lista */}
+              <div
+                style={{
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "var(--border-radius-md)",
+                  maxHeight: 200,
+                  overflowY: "auto",
+                  padding: 4,
+                }}
+              >
+                {filteredPeople.map((p) => {
+                  const isChecked = peopleIds.includes(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() =>
+                        setPeopleIds(isChecked ? peopleIds.filter((id) => id !== p.id) : [...peopleIds, p.id])
+                      }
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        width: "100%",
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        border: "none",
+                        background: isChecked ? "var(--bg-sidebar)" : "transparent",
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <span className="profile-avatar" style={{ width: 26, height: 26, fontSize: 9 }}>
+                        {initialsOf(p.name)}
+                      </span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: "block", fontSize: 13, fontWeight: 600 }}>{p.name}</span>
+                        {p.role && (
+                          <span style={{ display: "block", fontSize: 11, color: "var(--color-text-muted)" }}>{p.role}</span>
+                        )}
+                      </span>
+                      <span
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 18,
+                          height: 18,
+                          borderRadius: 5,
+                          border: `1px solid ${isChecked ? "#0066cc" : "var(--border-color)"}`,
+                          background: isChecked ? "#0066cc" : "transparent",
+                          color: "#fff",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {isChecked && <Check size={12} />}
+                      </span>
+                    </button>
+                  );
+                })}
+
+                {canQuickCreatePerson && (
+                  <button
+                    type="button"
+                    onClick={() => void handleQuickCreatePerson(peopleSearch)}
+                    disabled={creatingPerson}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      width: "100%",
+                      padding: "6px 8px",
+                      marginTop: filteredPeople.length > 0 ? 4 : 0,
+                      borderRadius: 6,
+                      border: "none",
+                      background: "transparent",
+                      cursor: creatingPerson ? "default" : "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 26,
+                        height: 26,
+                        borderRadius: "50%",
+                        background: "#e7f3ff",
+                        color: "#0066cc",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <UserPlus size={14} />
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 13, fontWeight: 600 }}>
+                        {creatingPerson ? "Criando…" : `Criar “${peopleSearch.trim()}”`}
+                      </span>
+                      <span style={{ display: "block", fontSize: 11, color: "var(--color-text-muted)" }}>
+                        Nova pessoa alocada ao projeto
+                      </span>
+                    </span>
+                  </button>
+                )}
+
+                {filteredPeople.length === 0 && !canQuickCreatePerson && (
+                  <div style={{ padding: 12, textAlign: "center", fontSize: 12, color: "var(--color-text-muted)" }}>
+                    {db.people.length === 0 ? "Nenhuma pessoa cadastrada ainda." : "Nenhuma pessoa encontrada."}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Descrição — ocupa toda a altura livre do card */}
+            <div className="form-group" style={{ flex: 1, minHeight: 220, display: "flex", flexDirection: "column" }}>
+              <label>Descrição</label>
+              <div
+                style={{
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "var(--border-radius-md)",
+                  overflow: "hidden",
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                <RichTextEditor
+                  value={description}
+                  onChange={setDescription}
+                  autoFocus={false}
+                  sidePanel={false}
+                  placeholder="Objetivos, escopo, pautas… (use @ para mencionar, / para comandos)"
+                />
+              </div>
+            </div>
+
+            <div className="form-actions" style={{ marginTop: 24, flexShrink: 0 }}>
               <button type="button" className="btn-secondary" onClick={() => setIsCreating(false)}>
                 Cancelar
               </button>
-              <button type="submit" className="btn-primary">
-                Criar Projeto
+              <button type="submit" className="btn-primary" disabled={!nameValid || saving}>
+                {saving ? "Criando…" : "Criar projeto"}
               </button>
             </div>
           </form>

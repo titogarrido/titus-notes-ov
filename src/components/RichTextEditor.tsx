@@ -54,6 +54,12 @@ interface RichTextEditorProps {
   value: string;
   onChange: (val: string) => void;
   placeholder?: string;
+  /** Foca o editor automaticamente ao montar. Desligue quando outro campo
+   *  (ex. o Nome no formulário de criação) deve receber o foco inicial. */
+  autoFocus?: boolean;
+  /** Exibe o painel lateral (índice/menções). Desligue em formulários compactos
+   *  como a criação de projeto, onde o editor deve ocupar toda a largura. */
+  sidePanel?: boolean;
   // Sumários por IA (opcionais — quando ausentes, oculta a aba)
   noteId?: string;
   noteTitle?: string;
@@ -1037,6 +1043,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   value,
   onChange,
   placeholder = "Digite algo... (use @ para mencionar pessoas, / para comandos)",
+  autoFocus = true,
+  sidePanel = true,
   noteTitle,
   summaries,
   templates,
@@ -1274,10 +1282,10 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     }
   };
 
-  // Mostra side panel só na aba de conteúdo
-  const showPanelHere = showSidePanel && tab === "content";
+  // Mostra side panel só na aba de conteúdo (e quando habilitado pelo pai)
+  const showPanelHere = sidePanel && showSidePanel && tab === "content";
   // Usado pra detectar contexto de "tem painel" na hora de mostrar o botão de toggle
-  const hasContextPanel = summariesEnabled || transcriptEnabled || !!noteId;
+  const hasContextPanel = sidePanel && (summariesEnabled || transcriptEnabled || !!noteId);
 
   return (
     <div className="rich-text-editor-container">
@@ -1440,7 +1448,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
                 />
 
                 <HistoryPlugin />
-                <AutoFocusPlugin />
+                {autoFocus && <AutoFocusPlugin />}
                 <ListPlugin />
                 <LinkPlugin />
                 <MarkdownShortcutPlugin transformers={TRANSFORMERS} />
