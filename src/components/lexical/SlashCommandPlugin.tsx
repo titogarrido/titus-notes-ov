@@ -1,8 +1,9 @@
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { useEffect, useState, useCallback } from "react";
-import { $getSelection, $isRangeSelection, TextNode } from "lexical";
-import { $createHeadingNode, $createQuoteNode, HeadingTagType } from "@lexical/rich-text";
+import { $getSelection, $isRangeSelection, $createParagraphNode, TextNode } from "lexical";
+import { $createHeadingNode, $createQuoteNode } from "@lexical/rich-text";
 import { $createCodeNode } from "@lexical/code";
+import { $setBlocksType } from "@lexical/selection";
 import { INSERT_ORDERED_LIST_COMMAND, INSERT_UNORDERED_LIST_COMMAND } from "@lexical/list";
 import {
   Type,
@@ -33,16 +34,15 @@ export function SlashCommandPlugin() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
 
-  const replaceWith = (factory: () => any) => () => {
+  // Converte o(s) bloco(s) selecionado(s) PRESERVANDO o conteúdo inline.
+  // O replace() anterior trocava o parágrafo por um bloco vazio (perdia texto
+  // e cursor) — por isso só listas funcionavam. $setBlocksType é o mesmo
+  // mecanismo usado pela barra de ferramentas.
+  const setBlock = (factory: () => any) => () => {
     editor.update(() => {
       const selection = $getSelection();
       if ($isRangeSelection(selection)) {
-        selection.getNodes().forEach((node) => {
-          if (node instanceof TextNode) {
-            const parent = node.getParent();
-            if (parent) parent.replace(factory());
-          }
-        });
+        $setBlocksType(selection, factory);
       }
     });
   };
@@ -54,7 +54,7 @@ export function SlashCommandPlugin() {
       section: "Texto",
       icon: <Type size={16} />,
       keywords: ["texto", "paragrafo", "normal", "text"],
-      onSelect: replaceWith(() => $createHeadingNode("p" as HeadingTagType)),
+      onSelect: setBlock(() => $createParagraphNode()),
     },
     {
       title: "Título grande",
@@ -63,7 +63,7 @@ export function SlashCommandPlugin() {
       section: "Texto",
       icon: <Heading1 size={16} />,
       keywords: ["h1", "titulo", "heading", "grande"],
-      onSelect: replaceWith(() => $createHeadingNode("h1")),
+      onSelect: setBlock(() => $createHeadingNode("h1")),
     },
     {
       title: "Subtítulo",
@@ -72,7 +72,7 @@ export function SlashCommandPlugin() {
       section: "Texto",
       icon: <Heading2 size={16} />,
       keywords: ["h2", "subtitulo", "heading", "medio"],
-      onSelect: replaceWith(() => $createHeadingNode("h2")),
+      onSelect: setBlock(() => $createHeadingNode("h2")),
     },
     {
       title: "Título pequeno",
@@ -81,7 +81,7 @@ export function SlashCommandPlugin() {
       section: "Texto",
       icon: <Heading3 size={16} />,
       keywords: ["h3", "titulo", "heading", "pequeno"],
-      onSelect: replaceWith(() => $createHeadingNode("h3")),
+      onSelect: setBlock(() => $createHeadingNode("h3")),
     },
     {
       title: "Lista com marcadores",
@@ -108,7 +108,7 @@ export function SlashCommandPlugin() {
       section: "Avançado",
       icon: <Code size={16} />,
       keywords: ["code", "codigo", "programacao"],
-      onSelect: replaceWith(() => $createCodeNode()),
+      onSelect: setBlock(() => $createCodeNode()),
     },
     {
       title: "Citação",
@@ -117,7 +117,7 @@ export function SlashCommandPlugin() {
       section: "Avançado",
       icon: <Quote size={16} />,
       keywords: ["quote", "citacao", "blockquote"],
-      onSelect: replaceWith(() => $createQuoteNode()),
+      onSelect: setBlock(() => $createQuoteNode()),
     },
   ];
 
