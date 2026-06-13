@@ -8,6 +8,8 @@ import {
   Loader2,
   ChevronDown,
   AlertCircle,
+  Pencil,
+  X,
 } from "lucide-react";
 import { OllamaSettings, Summary, SummaryTemplate } from "../types";
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -26,6 +28,7 @@ interface SummariesPanelProps {
   templates: SummaryTemplate[];
   settings: OllamaSettings;
   onAddSummary: (s: Summary) => Promise<void> | void;
+  onUpdateSummary: (s: Summary) => Promise<void> | void;
   onDeleteSummary: (id: string) => Promise<void> | void;
 }
 
@@ -37,6 +40,7 @@ export const SummariesPanel: React.FC<SummariesPanelProps> = ({
   templates,
   settings,
   onAddSummary,
+  onUpdateSummary,
   onDeleteSummary,
 }) => {
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -44,6 +48,31 @@ export const SummariesPanel: React.FC<SummariesPanelProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [pendingDelId, setPendingDelId] = useState<string | null>(null);
+  // Edição inline: id em edição + rascunho do markdown
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const startEdit = (s: Summary) => {
+    setEditingId(s.id);
+    setDraft(s.content);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setDraft("");
+  };
+
+  const saveEdit = async (s: Summary) => {
+    setSavingEdit(true);
+    try {
+      await onUpdateSummary({ ...s, content: draft, editedAt: new Date().toISOString() });
+      setEditingId(null);
+      setDraft("");
+    } finally {
+      setSavingEdit(false);
+    }
+  };
 
   const handleGenerate = async (tpl: SummaryTemplate) => {
     setPickerOpen(false);
@@ -230,31 +259,100 @@ export const SummariesPanel: React.FC<SummariesPanelProps> = ({
                   <div style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
                     {new Date(s.generatedAt).toLocaleString("pt-BR")}{" "}
                     {s.model ? `· ${s.model}` : ""}
+                    {s.editedAt && (
+                      <span title={`Editado em ${new Date(s.editedAt).toLocaleString("pt-BR")}`}>
+                        {" "}· editado
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: "4px" }}>
-                  <button
-                    type="button"
-                    className="btn-icon"
-                    onClick={() => copyToClipboard(s)}
-                    title="Copiar markdown"
-                  >
-                    {copiedId === s.id ? <Check size={14} /> : <Copy size={14} />}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-icon"
-                    onClick={() => setPendingDelId(s.id)}
-                    title="Excluir"
-                    style={{ color: "#cf222e" }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                {editingId === s.id ? (
+                  <div style={{ display: "flex", gap: "4px" }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={cancelEdit}
+                      disabled={savingEdit}
+                      style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", padding: "4px 10px" }}
+                    >
+                      <X size={13} /> Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => saveEdit(s)}
+                      disabled={savingEdit}
+                      style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", padding: "4px 10px" }}
+                    >
+                      {savingEdit ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Salvar
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: "4px" }}>
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={() => startEdit(s)}
+                      title="Editar"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={() => copyToClipboard(s)}
+                      title="Copiar markdown"
+                    >
+                      {copiedId === s.id ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-icon"
+                      onClick={() => setPendingDelId(s.id)}
+                      title="Excluir"
+                      style={{ color: "#cf222e" }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
+              {editingId === s.id ? (
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  autoFocus
+                  spellCheck={false}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      cancelEdit();
+                    } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      e.preventDefault();
+                      void saveEdit(s);
+                    }
+                  }}
+                  style={{
+                    width: "100%",
+                    minHeight: "220px",
+                    padding: "12px 16px",
+                    border: "1px solid var(--border-color)",
+                    borderRadius: "8px",
+                    fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
+                    fontSize: "13px",
+                    lineHeight: 1.55,
+                    resize: "vertical",
+                    outline: "none",
+                    background: "white",
+                    color: "#212529",
+                    boxSizing: "border-box",
+                  }}
+                />
+              ) : (
+                <div style={{ background: "white", borderRadius: "8px", padding: "12px 16px", border: "1px solid var(--border-color)" }}>
+                  <MarkdownRenderer content={s.content} />
                 </div>
-              </div>
-              <div style={{ background: "white", borderRadius: "8px", padding: "12px 16px", border: "1px solid var(--border-color)" }}>
-                <MarkdownRenderer content={s.content} />
-              </div>
+              )}
             </div>
           ))}
         </div>

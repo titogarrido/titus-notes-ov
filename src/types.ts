@@ -72,6 +72,8 @@ export interface Summary {
   content: string;
   generatedAt: string;
   model: string;
+  /** Definido quando o usuário editou manualmente o conteúdo gerado pela IA */
+  editedAt?: string;
 }
 
 export interface Note {

@@ -114,6 +114,7 @@ export const NotesView: React.FC = () => {
     addNote,
     updateNote,
     deleteNote,
+    addPerson,
   } = useApp();
 
   const [participantSearch, setParticipantSearch] = useState("");
@@ -182,12 +183,6 @@ export const NotesView: React.FC = () => {
     });
     setJustCreatedId(newId);
     setSelectedEntityId(newId);
-  };
-
-  const handleTitleChange = async (newTitle: string) => {
-    if (!selectedEntityId) return;
-    const note = db.notes.find((n) => n.id === selectedEntityId);
-    if (note) await updateNote({ ...note, title: newTitle });
   };
 
   const handleDateChange = async (newDate: string) => {
@@ -262,6 +257,21 @@ export const NotesView: React.FC = () => {
     queueNoteFields(selectedEntityId, { content: newContent });
   };
 
+  // Título com estado local + mesmo debounce do conteúdo: salvar a cada tecla
+  // serializava o db inteiro por keystroke e fazia a digitação engasgar
+  // (justo no início da reunião, quando o título é escrito).
+  const [titleDraft, setTitleDraft] = useState("");
+  useEffect(() => {
+    const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
+    setTitleDraft(note?.title ?? "");
+  }, [selectedEntityId]);
+
+  const handleTitleChange = (newTitle: string) => {
+    if (!selectedEntityId) return;
+    setTitleDraft(newTitle);
+    queueNoteFields(selectedEntityId, { title: newTitle });
+  };
+
   const togglePersonParticipant = async (personId: string) => {
     if (!selectedEntityId) return;
     const note = db.notes.find((n) => n.id === selectedEntityId);
@@ -271,6 +281,34 @@ export const NotesView: React.FC = () => {
         ? note.peopleIds.filter((id) => id !== personId)
         : [...note.peopleIds, personId];
       await updateNote({ ...note, peopleIds: newPeopleIds });
+    }
+  };
+
+  // Cria uma pessoa "na hora" a partir do texto buscado e já a marca na nota,
+  // sem sair da tela. Os demais campos ficam vazios para edição posterior em
+  // Pessoas. Marca como contato (isContact) por ser um cadastro rápido.
+  const [creatingPerson, setCreatingPerson] = useState(false);
+  const quickCreateParticipant = async (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || !selectedEntityId || creatingPerson) return;
+    setCreatingPerson(true);
+    try {
+      const newId = await addPerson({
+        name: trimmed,
+        role: "",
+        email: "",
+        department: "",
+        managerId: null,
+        isContact: true,
+      });
+      const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
+      if (note && !note.peopleIds.includes(newId)) {
+        await updateNote({ ...note, peopleIds: [...note.peopleIds, newId] });
+      }
+      setParticipantSearch("");
+      setIsDropdownOpen(false);
+    } finally {
+      setCreatingPerson(false);
     }
   };
 
@@ -658,7 +696,7 @@ export const NotesView: React.FC = () => {
                 <input
                   ref={titleInputRef}
                   type="text"
-                  value={selectedNote.title}
+                  value={titleDraft}
                   onChange={(e) => handleTitleChange(e.target.value)}
                   style={{
                     border: "none",
@@ -676,12 +714,12 @@ export const NotesView: React.FC = () => {
                 />
               </div>
               <button
-                className="btn-secondary"
-                style={{ color: "#cf222e", borderColor: "#cf222e22" }}
+                className="btn-icon"
+                style={{ color: "#cf222e", flexShrink: 0 }}
                 onClick={() => handleDelete(selectedNote.id)}
+                title="Excluir nota"
               >
-                <Trash2 size={14} style={{ marginRight: 4, display: "inline", verticalAlign: "middle" }} />
-                <span>Excluir Nota</span>
+                <Trash2 size={16} />
               </button>
             </div>
 
@@ -807,7 +845,8 @@ export const NotesView: React.FC = () => {
                     </button>
 
                     {isDropdownOpen && (() => {
-                      const searchLower = participantSearch.toLowerCase().trim();
+                      const trimmedSearch = participantSearch.trim();
+                      const searchLower = trimmedSearch.toLowerCase();
                       const filtered = db.people.filter((p) => {
                         if (selectedNote.peopleIds.includes(p.id)) return false;
                         if (!searchLower) return true;
@@ -816,6 +855,12 @@ export const NotesView: React.FC = () => {
                           p.role.toLowerCase().includes(searchLower)
                         );
                       });
+                      // Mostra "Criar" quando há texto digitado e nenhuma pessoa
+                      // (já cadastrada) tem exatamente esse nome.
+                      const hasExactMatch = db.people.some(
+                        (p) => p.name.toLowerCase() === searchLower,
+                      );
+                      const canQuickCreate = trimmedSearch.length > 0 && !hasExactMatch;
 
                       return (
                         <div
@@ -848,7 +893,13 @@ export const NotesView: React.FC = () => {
                               type="text"
                               value={participantSearch}
                               onChange={(e) => setParticipantSearch(e.target.value)}
-                              placeholder="Buscar..."
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && canQuickCreate) {
+                                  e.preventDefault();
+                                  void quickCreateParticipant(trimmedSearch);
+                                }
+                              }}
+                              placeholder="Buscar ou criar pessoa..."
                               autoFocus
                               style={{ border: "none", outline: "none", background: "transparent", fontSize: 12, flex: 1 }}
                             />
@@ -908,9 +959,62 @@ export const NotesView: React.FC = () => {
                                 </button>
                               ))
                             ) : (
-                              <div style={{ padding: 12, textAlign: "center", fontSize: 11, color: "var(--color-text-muted)" }}>
-                                Nenhuma pessoa encontrada
-                              </div>
+                              !canQuickCreate && (
+                                <div style={{ padding: 12, textAlign: "center", fontSize: 11, color: "var(--color-text-muted)" }}>
+                                  {trimmedSearch ? "Nenhuma pessoa encontrada" : "Digite para buscar ou criar"}
+                                </div>
+                              )
+                            )}
+
+                            {canQuickCreate && (
+                              <button
+                                onClick={() => void quickCreateParticipant(trimmedSearch)}
+                                disabled={creatingPerson}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  width: "100%",
+                                  padding: "6px 8px",
+                                  marginTop: filtered.length > 0 ? 4 : 0,
+                                  borderRadius: 6,
+                                  border: "none",
+                                  background: "transparent",
+                                  cursor: creatingPerson ? "default" : "pointer",
+                                  textAlign: "left",
+                                  fontSize: 12,
+                                }}
+                                onMouseEnter={(e) => {
+                                  (e.currentTarget as HTMLElement).style.backgroundColor = "var(--bg-sidebar)";
+                                }}
+                                onMouseLeave={(e) => {
+                                  (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    width: 24,
+                                    height: 24,
+                                    borderRadius: "50%",
+                                    background: "#e7f3ff",
+                                    color: "#0066cc",
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  <Plus size={14} />
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontWeight: 600, fontSize: 11 }}>
+                                    {creatingPerson ? "Criando…" : `Criar “${trimmedSearch}”`}
+                                  </div>
+                                  <div style={{ fontSize: 10, color: "var(--color-text-muted)" }}>
+                                    Nova pessoa adicionada à nota
+                                  </div>
+                                </div>
+                              </button>
                             )}
                           </div>
                         </div>
@@ -942,6 +1046,14 @@ export const NotesView: React.FC = () => {
                   await updateNote({
                     ...selectedNote,
                     summaries: [summary, ...(selectedNote.summaries || [])],
+                  });
+                }}
+                onUpdateSummary={async (summary) => {
+                  await updateNote({
+                    ...selectedNote,
+                    summaries: (selectedNote.summaries || []).map((s) =>
+                      s.id === summary.id ? summary : s,
+                    ),
                   });
                 }}
                 onDeleteSummary={async (id) => {

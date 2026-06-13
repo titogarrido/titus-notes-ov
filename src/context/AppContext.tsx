@@ -114,7 +114,7 @@ interface AppContextType {
   updateCompany: (company: Company) => Promise<void>;
   deleteCompany: (id: string) => Promise<void>;
 
-  addPerson: (person: Omit<Person, "id">) => Promise<void>;
+  addPerson: (person: Omit<Person, "id">) => Promise<string>;
   updatePerson: (person: Person) => Promise<void>;
   deletePerson: (id: string) => Promise<void>;
   
@@ -452,6 +452,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...prev,
       people: [...prev.people, newPerson],
     }));
+    return newPerson.id;
   };
 
   const updatePerson = async (updatedPerson: Person) => {
