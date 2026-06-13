@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useApp } from "../context/AppContext";
 import {
   FileText,
@@ -7,6 +7,12 @@ import {
   Users,
   Inbox,
   ChevronDown,
+  Mic,
+  Volume2,
+  Sparkles,
+  Check,
+  Calendar,
+  AlertTriangle,
 } from "lucide-react";
 
 // --- helpers ---
@@ -134,6 +140,37 @@ export const Dashboard: React.FC = () => {
     db.projects[0]?.id || "",
   );
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [quickToast, setQuickToast] = useState<string | null>(null);
+  const quickInputRef = useRef<HTMLInputElement>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Foca a captura rápida ao abrir o painel.
+  useEffect(() => {
+    quickInputRef.current?.focus();
+  }, []);
+
+  // Fecha o seletor de projeto ao clicar fora.
+  useEffect(() => {
+    if (!projectMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
+        setProjectMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [projectMenuOpen]);
+
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
+  const flashToast = (msg: string) => {
+    setQuickToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setQuickToast(null), 2500);
+  };
 
   const quickProject = db.projects.find((p) => p.id === quickProjectId);
 
@@ -162,6 +199,10 @@ export const Dashboard: React.FC = () => {
         personId: null,
       });
       setQuickText("");
+      flashToast(
+        quickProject ? `Tarefa criada em ${quickProject.name}` : "Tarefa criada na caixa de entrada",
+      );
+      quickInputRef.current?.focus();
     } else if (quickKind === "pessoa") {
       await addPerson({
         name: text,
@@ -169,8 +210,11 @@ export const Dashboard: React.FC = () => {
         email: "",
         department: "",
         managerId: null,
+        isContact: true,
       });
       setQuickText("");
+      flashToast(`Pessoa "${text}" criada`);
+      quickInputRef.current?.focus();
     }
   };
 
@@ -214,8 +258,25 @@ export const Dashboard: React.FC = () => {
     return { proj, done, total, pct, status, latestNote };
   });
 
+  // ----- Hoje = tarefas vencendo hoje ou atrasadas (todos os projetos) -----
+  const dueTodayOrOverdue = db.tasks
+    .filter(
+      (t) =>
+        !t.completed &&
+        t.dueDate &&
+        parseLocal(t.dueDate).getTime() <= startOfToday.getTime(),
+    )
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate)); // mais atrasadas primeiro
+  const overdueCount = dueTodayOrOverdue.filter(
+    (t) => parseLocal(t.dueDate).getTime() < startOfToday.getTime(),
+  ).length;
+
   // ----- Caixa de entrada = tarefas sem projeto -----
   const inboxTasks = db.tasks.filter((t) => !t.completed && !t.projectId);
+
+  // ----- Primeira execução: nada cadastrado ainda -----
+  const isFirstRun =
+    db.projects.length === 0 && db.notes.length === 0 && db.people.length === 0;
 
   // ----- Notas recentes -----
   const recentNotes = [...db.notes]
@@ -272,9 +333,32 @@ export const Dashboard: React.FC = () => {
             {greeting}
           </h1>{" "}
           <span style={{ fontSize: "13px", color: "var(--color-text-muted)" }}>
-            {db.projects.length} projeto{db.projects.length === 1 ? "" : "s"} ·{" "}
-            {db.people.length} pessoa{db.people.length === 1 ? "" : "s"} ·{" "}
-            {notesThisWeek.length} nota{notesThisWeek.length === 1 ? "" : "s"} esta semana
+            <StatLink
+              onClick={() => {
+                setSelectedEntityId(null);
+                setCurrentView("projetos");
+              }}
+            >
+              {db.projects.length} projeto{db.projects.length === 1 ? "" : "s"}
+            </StatLink>{" "}
+            ·{" "}
+            <StatLink
+              onClick={() => {
+                setSelectedEntityId(null);
+                setCurrentView("pessoas");
+              }}
+            >
+              {db.people.length} pessoa{db.people.length === 1 ? "" : "s"}
+            </StatLink>{" "}
+            ·{" "}
+            <StatLink
+              onClick={() => {
+                setSelectedEntityId(null);
+                setCurrentView("notas");
+              }}
+            >
+              {notesThisWeek.length} nota{notesThisWeek.length === 1 ? "" : "s"} esta semana
+            </StatLink>
           </span>
         </div>
 
@@ -305,6 +389,7 @@ export const Dashboard: React.FC = () => {
       >
         <Plus size={16} style={{ color: "var(--color-text-muted)", flexShrink: 0 }} />
         <input
+          ref={quickInputRef}
           type="text"
           value={quickText}
           onChange={(e) => setQuickText(e.target.value)}
@@ -349,7 +434,7 @@ export const Dashboard: React.FC = () => {
         </div>
 
         {quickKind !== "pessoa" && db.projects.length > 0 && (
-          <div style={{ position: "relative" }}>
+          <div style={{ position: "relative" }} ref={projectMenuRef}>
             <button
               onClick={() => setProjectMenuOpen((v) => !v)}
               style={{
@@ -427,9 +512,33 @@ export const Dashboard: React.FC = () => {
             )}
           </div>
         )}
+
+        {quickToast && (
+          <div
+            style={{
+              flexBasis: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "12px",
+              color: "#1f8e3d",
+            }}
+          >
+            <Check size={13} /> {quickToast}
+          </div>
+        )}
       </div>
 
-      {/* MAIN GRID: projetos (esq) + sidebar pessoas/notas (dir) */}
+      {isFirstRun ? (
+        <FirstRunWelcome
+          onNewProject={() => {
+            setSelectedEntityId(null);
+            setCurrentView("projetos");
+          }}
+          onCapture={() => quickInputRef.current?.focus()}
+        />
+      ) : (
+      /* MAIN GRID: projetos (esq) + sidebar pessoas/notas (dir) */
       <div
         style={{
           display: "grid",
@@ -440,6 +549,25 @@ export const Dashboard: React.FC = () => {
       >
         {/* COLUNA ESQUERDA */}
         <div style={{ display: "flex", flexDirection: "column", gap: "16px", minWidth: 0 }}>
+          {/* HOJE */}
+          {dueTodayOrOverdue.length > 0 && (
+            <TodaySection
+              tasks={dueTodayOrOverdue}
+              overdueCount={overdueCount}
+              projects={db.projects}
+              today={today}
+              onToggle={(t) => {
+                const full = db.tasks.find((x) => x.id === t.id);
+                if (full) updateTask({ ...full, completed: !full.completed });
+              }}
+              onOpen={(id) => {
+                setSelectedEntityId(id);
+                setCurrentView("tarefas");
+              }}
+              onSeeAll={() => setCurrentView("tarefas")}
+            />
+          )}
+
           {/* PROJETOS */}
           <div>
             <div
@@ -977,14 +1105,37 @@ export const Dashboard: React.FC = () => {
                     >
                       <div
                         style={{
-                          fontSize: "13px",
-                          fontWeight: 600,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          minWidth: 0,
                         }}
                       >
-                        {note.title || "Sem título"}
+                        <span
+                          style={{
+                            fontSize: "13px",
+                            fontWeight: 600,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            flex: 1,
+                            minWidth: 0,
+                          }}
+                        >
+                          {note.title || "Sem título"}
+                        </span>
+                        {note.transcript && note.transcript.trim().length > 0 && (
+                          <Mic size={12} style={{ color: "#0066cc", flexShrink: 0 }} aria-label="Possui transcrição" />
+                        )}
+                        {note.audioFile && (
+                          <Volume2 size={12} style={{ color: "#1f8e3d", flexShrink: 0 }} aria-label="Possui áudio" />
+                        )}
+                        {note.summaries && note.summaries.length > 0 && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 2, color: "#8250df", flexShrink: 0 }}>
+                            <Sparkles size={12} />
+                            <span style={{ fontSize: 10, fontWeight: 700 }}>{note.summaries.length}</span>
+                          </span>
+                        )}
                       </div>
                       <div
                         style={{
@@ -1005,11 +1156,307 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 };
 
 export default Dashboard;
+
+// ---------- Stat link (números clicáveis do cabeçalho) ----------
+
+const StatLink: React.FC<{ onClick: () => void; children: React.ReactNode }> = ({
+  onClick,
+  children,
+}) => (
+  <button
+    onClick={onClick}
+    style={{
+      background: "none",
+      border: "none",
+      padding: 0,
+      font: "inherit",
+      color: "var(--color-text-muted)",
+      cursor: "pointer",
+      borderBottom: "1px dashed transparent",
+    }}
+    onMouseEnter={(e) => {
+      (e.currentTarget as HTMLElement).style.color = "var(--color-text-main)";
+      (e.currentTarget as HTMLElement).style.borderBottomColor = "var(--border-color)";
+    }}
+    onMouseLeave={(e) => {
+      (e.currentTarget as HTMLElement).style.color = "var(--color-text-muted)";
+      (e.currentTarget as HTMLElement).style.borderBottomColor = "transparent";
+    }}
+  >
+    {children}
+  </button>
+);
+
+// ---------- Seção "Hoje" (tarefas vencendo hoje / atrasadas) ----------
+
+type TodayTask = {
+  id: string;
+  title: string;
+  dueDate: string;
+  completed: boolean;
+  projectId: string | null;
+};
+
+const TodaySection: React.FC<{
+  tasks: TodayTask[];
+  overdueCount: number;
+  projects: { id: string; name: string }[];
+  today: Date;
+  onToggle: (t: TodayTask) => void;
+  onOpen: (id: string) => void;
+  onSeeAll: () => void;
+}> = ({ tasks, overdueCount, projects, today, onToggle, onOpen, onSeeAll }) => {
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const shown = tasks.slice(0, 6);
+  const todayCount = tasks.length - overdueCount;
+
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "10px",
+        }}
+      >
+        <h2
+          className="section-title"
+          style={{ margin: 0, fontSize: "15px", display: "flex", alignItems: "center", gap: "6px" }}
+        >
+          <Calendar size={16} /> Hoje
+          {overdueCount > 0 && (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
+                fontSize: "11px",
+                fontWeight: 600,
+                color: "#c2410c",
+                background: "#fde2d4",
+                borderRadius: "999px",
+                padding: "2px 8px",
+                marginLeft: 4,
+              }}
+            >
+              <AlertTriangle size={11} /> {overdueCount} atrasada{overdueCount === 1 ? "" : "s"}
+            </span>
+          )}
+          {todayCount > 0 && (
+            <span style={{ color: "var(--color-text-muted)", fontWeight: 500, marginLeft: 4, fontSize: "12px" }}>
+              {todayCount} para hoje
+            </span>
+          )}
+        </h2>
+        {tasks.length > shown.length && (
+          <button
+            className="btn-icon"
+            onClick={onSeeAll}
+            style={{ fontSize: "12px", color: "var(--color-text-muted)" }}
+          >
+            Ver todas
+          </button>
+        )}
+      </div>
+
+      <div
+        style={{
+          border: "1px solid var(--border-color)",
+          borderRadius: "12px",
+          background: "white",
+          padding: "4px 12px",
+        }}
+      >
+        {shown.map((t, i) => {
+          const proj = projects.find((p) => p.id === t.projectId);
+          const isOverdue = parseLocal(t.dueDate).getTime() < startOfToday.getTime();
+          return (
+            <div
+              key={t.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                padding: "10px 4px",
+                borderTop: i === 0 ? "none" : "1px solid var(--border-color)",
+              }}
+            >
+              <button
+                onClick={() => onToggle(t)}
+                style={{
+                  width: "18px",
+                  height: "18px",
+                  borderRadius: "4px",
+                  border: "1.5px solid var(--border-color)",
+                  background: "white",
+                  cursor: "pointer",
+                  padding: 0,
+                  flexShrink: 0,
+                }}
+                title="Concluir"
+              />
+              <button
+                onClick={() => onOpen(t.id)}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  textAlign: "left",
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  fontWeight: 500,
+                  padding: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {t.title}
+              </button>
+              {proj && (
+                <span
+                  style={{
+                    fontSize: "10px",
+                    color: "var(--color-text-muted)",
+                    background: "#eef0f3",
+                    borderRadius: "999px",
+                    padding: "2px 8px",
+                    whiteSpace: "nowrap",
+                    maxWidth: "120px",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {proj.name}
+                </span>
+              )}
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: isOverdue ? 600 : 400,
+                  color: isOverdue ? "#c2410c" : "var(--color-text-muted)",
+                  minWidth: "62px",
+                  textAlign: "right",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {relativeFromDays(t.dueDate, today)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ---------- Estado de primeira execução ----------
+
+const FirstRunWelcome: React.FC<{ onNewProject: () => void; onCapture: () => void }> = ({
+  onNewProject,
+  onCapture,
+}) => {
+  const items: { icon: React.ReactNode; title: string; desc: string }[] = [
+    { icon: <Folder size={18} />, title: "Projetos", desc: "Agrupam notas, tarefas e pessoas de uma iniciativa." },
+    { icon: <FileText size={18} />, title: "Notas de reunião", desc: "Grave o áudio, transcreva e gere sumários com IA." },
+    { icon: <Users size={18} />, title: "Pessoas", desc: "Participantes das reuniões e do organograma." },
+  ];
+  return (
+    <div
+      style={{
+        border: "1.5px dashed var(--border-color)",
+        borderRadius: "16px",
+        background: "var(--bg-sidebar)",
+        padding: "40px 32px",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        textAlign: "center",
+        gap: "8px",
+      }}
+    >
+      <div
+        style={{
+          width: "52px",
+          height: "52px",
+          borderRadius: "14px",
+          background: "#fde2d4",
+          color: "#c2410c",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <FileText size={26} />
+      </div>
+      <h2 style={{ margin: "8px 0 0", fontSize: "20px", fontWeight: 800 }}>
+        Bem-vindo ao Titus Notes
+      </h2>
+      <p style={{ margin: 0, fontSize: "13px", color: "var(--color-text-muted)", maxWidth: "440px" }}>
+        Seu espaço para tomar notas em reuniões, gravar o áudio e gerar sumários com IA.
+        Comece criando um projeto ou capturando uma nota rápida acima.
+      </p>
+
+      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", justifyContent: "center", marginTop: "12px" }}>
+        <button
+          className="btn-primary"
+          onClick={onNewProject}
+          style={{ display: "flex", alignItems: "center", gap: "6px" }}
+        >
+          <Plus size={14} /> Criar primeiro projeto
+        </button>
+        <button
+          className="btn-secondary"
+          onClick={onCapture}
+          style={{ display: "flex", alignItems: "center", gap: "6px" }}
+        >
+          <FileText size={14} /> Capturar uma nota
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gap: "12px",
+          marginTop: "24px",
+          width: "100%",
+          maxWidth: "640px",
+        }}
+      >
+        {items.map((it) => (
+          <div
+            key={it.title}
+            style={{
+              border: "1px solid var(--border-color)",
+              borderRadius: "12px",
+              background: "white",
+              padding: "16px",
+              textAlign: "left",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+            }}
+          >
+            <span style={{ color: "var(--color-text-muted)" }}>{it.icon}</span>
+            <span style={{ fontSize: "13px", fontWeight: 700 }}>{it.title}</span>
+            <span style={{ fontSize: "12px", color: "var(--color-text-muted)", lineHeight: 1.4 }}>
+              {it.desc}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 // ---------- Inbox row with project assignment ----------
 
@@ -1021,6 +1468,17 @@ const InboxRow: React.FC<{
   onToggle: () => void;
 }> = ({ task, projects, onAssign, onOpen, onToggle }) => {
   const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
   return (
     <div
       style={{
@@ -1065,7 +1523,7 @@ const InboxRow: React.FC<{
         {task.title}
       </button>
 
-      <div style={{ position: "relative" }}>
+      <div style={{ position: "relative" }} ref={menuRef}>
         <button
           onClick={() => setOpen((v) => !v)}
           style={{
