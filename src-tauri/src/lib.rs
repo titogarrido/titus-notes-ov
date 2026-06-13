@@ -1,5 +1,6 @@
 mod mic_monitor;
 mod recorder;
+pub mod transcriber;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -1517,6 +1518,7 @@ fn epoch_days_to_ymd(days: i64) -> (i32, u32, u32) {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(recorder::RecorderState(std::sync::Mutex::new(None)))
+        .manage(transcriber::TranscriberState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1572,7 +1574,14 @@ pub fn run() {
             recorder::start_recording,
             recorder::stop_recording,
             recorder::cancel_recording,
-            recorder::recording_status
+            recorder::recording_status,
+            transcriber::transcription_model_status,
+            transcriber::download_transcription_model,
+            transcriber::cancel_transcription_model_download,
+            transcriber::delete_transcription_model,
+            transcriber::transcribe_audio,
+            transcriber::cancel_transcription,
+            transcriber::transcription_status
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -167,6 +167,23 @@ export interface Database {
   audioCleanupLastAt?: string;
 }
 
+export interface TranscriptionModelStatus {
+  ready: boolean;
+  downloading: boolean;
+  modelDir: string;
+  bytesOnDisk: number;
+  missingFiles: string[];
+}
+
+export interface ActiveTranscription {
+  noteId: string;
+  filename: string;
+  /** "decoding" enquanto o áudio vira PCM; "transcribing" durante a inferência */
+  phase: "decoding" | "transcribing";
+  processedSecs: number;
+  totalSecs: number;
+}
+
 export interface ImportedHyprnoteSession {
   folderName: string;
   metaJson: string | null;

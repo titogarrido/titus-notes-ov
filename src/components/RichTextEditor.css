@@ -1021,6 +1021,16 @@
   50% { opacity: 0.55; box-shadow: 0 0 0 5px rgba(220, 38, 38, 0); }
 }
 
+/* Barra indeterminada da fase de decodificação da transcrição */
+.transcribe-indeterminate {
+  animation: transcribe-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes transcribe-slide {
+  0% { left: -30%; }
+  100% { left: 100%; }
+}
+
 .recorder-btn {
   display: inline-flex;
   align-items: center;
