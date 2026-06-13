@@ -20,6 +20,7 @@ import {
   UserCircle,
   ArrowUpCircle,
   Cloud,
+  Captions,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -40,6 +41,7 @@ import {
   AudioCleanupAge,
   AudioCleanupSchedule,
   AudioCleanupResult,
+  TranscriptionModelStatus,
 } from "../types";
 import { pingOllama } from "../lib/ollama";
 import { ImportReport } from "../lib/hyprnoteImport";
@@ -117,6 +119,75 @@ export const SettingsView: React.FC = () => {
     await updateSettings({ url: url.trim(), model: model.trim(), language });
     setSavedHint(true);
     setTimeout(() => setSavedHint(false), 1500);
+  };
+
+  // ---- Transcrição local (Parakeet v3) ----
+  const [trModel, setTrModel] = useState<TranscriptionModelStatus | null>(null);
+  const [trDownload, setTrDownload] = useState<{
+    overallDownloaded: number;
+    overallTotal: number;
+  } | null>(null);
+  const [trError, setTrError] = useState<string | null>(null);
+  const [pendingDeleteModel, setPendingDeleteModel] = useState(false);
+
+  const refreshTrModel = () => {
+    invoke<TranscriptionModelStatus>("transcription_model_status")
+      .then(setTrModel)
+      .catch(() => setTrModel(null));
+  };
+
+  useEffect(() => {
+    refreshTrModel();
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const track = (p: Promise<() => void>) =>
+      p.then((u) => {
+        if (disposed) u();
+        else unlisteners.push(u);
+      });
+    track(
+      listen<{ overallDownloaded: number; overallTotal: number }>(
+        "transcription-model-progress",
+        (e) => setTrDownload(e.payload),
+      ),
+    );
+    track(
+      listen("transcription-model-finished", () => {
+        setTrDownload(null);
+        refreshTrModel();
+      }),
+    );
+    track(
+      listen<{ message: string }>("transcription-model-error", (e) => {
+        setTrDownload(null);
+        setTrError(e.payload.message);
+        refreshTrModel();
+      }),
+    );
+    return () => {
+      disposed = true;
+      unlisteners.forEach((u) => u());
+    };
+  }, []);
+
+  const handleDownloadModel = () => {
+    setTrError(null);
+    setTrDownload({ overallDownloaded: 0, overallTotal: 0 });
+    invoke("download_transcription_model").catch((e: any) => {
+      setTrError(String(e?.message || e));
+      setTrDownload(null);
+    });
+  };
+
+  const handleDeleteModel = async () => {
+    setPendingDeleteModel(false);
+    setTrError(null);
+    try {
+      await invoke("delete_transcription_model");
+      refreshTrModel();
+    } catch (e: any) {
+      setTrError(String(e?.message || e));
+    }
   };
 
   const handleTestConnection = async () => {
@@ -683,6 +754,7 @@ export const SettingsView: React.FC = () => {
       label: "Inteligência Artificial",
       items: [
         { id: "ollama", label: "Ollama" },
+        { id: "transcription", label: "Transcrição local" },
         { id: "templates", label: "Templates de sumário" },
       ],
     },
@@ -918,6 +990,106 @@ export const SettingsView: React.FC = () => {
               </span>
             )}
           </div>
+        </div>
+
+        {/* Transcrição local */}
+        <div id="section-transcription" className="settings-card">
+          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
+            <Captions size={16} />
+            <span>Transcrição local · Parakeet v3</span>
+          </h2>
+          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "14px" }}>
+            Transcreve as gravações de reunião 100% offline usando o modelo{" "}
+            <strong>NVIDIA Parakeet TDT 0.6b v3</strong> (multilíngue, inclui português). O botão
+            de transcrever fica na aba <strong>Transcrição</strong> das notas com áudio anexado.
+          </p>
+
+          <div className="settings-row">
+            <div className="settings-text-block">
+              <span className="settings-title">Modelo de reconhecimento de voz</span>
+              <span className="settings-desc">
+                {trModel?.ready
+                  ? `Baixado · ${(trModel.bytesOnDisk / 1024 / 1024).toFixed(0)} MB em disco`
+                  : trDownload
+                  ? "Baixando…"
+                  : "Não baixado (~670 MB, download único)"}
+              </span>
+            </div>
+            {trModel?.ready ? (
+              <button
+                className="btn-secondary"
+                onClick={() => setPendingDeleteModel(true)}
+                style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap", color: "#cf222e" }}
+              >
+                <Trash2 size={14} />
+                <span>Remover modelo</span>
+              </button>
+            ) : trDownload ? (
+              <button
+                className="btn-secondary"
+                onClick={() => invoke("cancel_transcription_model_download").catch(() => {})}
+                style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+              >
+                <X size={14} />
+                <span>Cancelar</span>
+              </button>
+            ) : (
+              <button
+                className="btn-primary"
+                onClick={handleDownloadModel}
+                style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+              >
+                <Download size={14} />
+                <span>Baixar modelo</span>
+              </button>
+            )}
+          </div>
+
+          {trDownload && (
+            <div style={{ marginTop: 10 }}>
+              <div
+                style={{
+                  height: "6px",
+                  borderRadius: "3px",
+                  background: "#e5e7eb",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${
+                      trDownload.overallTotal > 0
+                        ? Math.min(100, Math.round((trDownload.overallDownloaded / trDownload.overallTotal) * 100))
+                        : 0
+                    }%`,
+                    height: "100%",
+                    borderRadius: "3px",
+                    background: "#2563eb",
+                    transition: "width 300ms linear",
+                  }}
+                />
+              </div>
+              <div style={{ fontSize: "11px", color: "var(--color-text-muted)", marginTop: 4 }}>
+                {(trDownload.overallDownloaded / 1024 / 1024).toFixed(0)} MB
+                {trDownload.overallTotal > 0
+                  ? ` de ${(trDownload.overallTotal / 1024 / 1024).toFixed(0)} MB`
+                  : ""}
+              </div>
+            </div>
+          )}
+
+          {trError && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#cf222e", marginTop: 8 }}>
+              <AlertCircle size={14} /> {trError}
+            </div>
+          )}
+
+          {trModel?.ready && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1f8e3d", marginTop: 8 }}>
+              <CheckCircle2 size={14} />
+              <span>Pronto para transcrever — abra uma nota com áudio e use a aba Transcrição.</span>
+            </div>
+          )}
         </div>
 
         {/* Templates de sumário */}
@@ -1862,6 +2034,21 @@ export const SettingsView: React.FC = () => {
         danger
         onConfirm={handleConfirmResetRoot}
         onCancel={() => setResetRootConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={pendingDeleteModel}
+        title="Remover modelo de transcrição?"
+        message={
+          <>
+            Os arquivos do Parakeet v3 (~670 MB) serão apagados do disco. Você pode
+            baixá-los novamente quando quiser — as transcrições já geradas não são afetadas.
+          </>
+        }
+        confirmLabel="Remover"
+        danger
+        onConfirm={handleDeleteModel}
+        onCancel={() => setPendingDeleteModel(false)}
       />
 
       <ConfirmDialog

@@ -387,6 +387,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // --- Transcrição local: persiste o texto mesmo se o usuário trocou de tela
+  // enquanto o Parakeet processava o áudio. A UI da nota só reflete o estado.
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    listen<{ noteId: string; filename: string; text: string }>(
+      "transcription-finished",
+      async (e) => {
+        const { noteId, text } = e.payload;
+        await saveDatabase((prev) => ({
+          ...prev,
+          notes: prev.notes.map((n) =>
+            n.id === noteId ? { ...n, transcript: text } : n,
+          ),
+        }));
+      },
+    ).then((u) => {
+      if (disposed) u();
+      else unlisteners.push(u);
+    });
+    return () => {
+      disposed = true;
+      unlisteners.forEach((u) => u());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // --- COMPANIES CRUD ---
   const addCompany = async (data: Omit<Company, "id">): Promise<string> => {
     const id = `company-${Date.now()}`;

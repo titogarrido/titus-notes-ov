@@ -2,7 +2,7 @@ import React, { useRef, useState, useMemo, useCallback, useEffect } from "react"
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./RichTextEditor.css";
-import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2 } from "lucide-react";
+import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2, Captions, Download, Loader2, X } from "lucide-react";
 import { Summary, SummaryTemplate, OllamaSettings } from "../types";
 import { SummariesPanel } from "./SummariesPanel";
 import { NoteSidePanel } from "./lexical/NoteSidePanel";
@@ -136,6 +136,315 @@ const TranscriptAudioPlayer: React.FC<{ filename: string }> = ({ filename }) => 
         <span style={{ fontSize: "12px", color: "var(--color-text-muted)" }}>
           Carregando áudio…
         </span>
+      )}
+    </div>
+  );
+};
+
+// ----- Transcrição local (Parakeet TDT v3 via ONNX, on-demand) -----
+//
+// O trabalho pesado roda no backend Rust; aqui só disparamos o job e
+// refletimos progresso/erro via eventos globais `transcription-*`. A
+// persistência do texto na nota é feita pelo AppContext (sobrevive à troca
+// de tela) — este componente só atualiza a textarea local quando o job
+// desta nota termina.
+
+import {
+  TranscriptionModelStatus,
+  ActiveTranscription,
+} from "../types";
+
+const MODEL_LABEL = "Parakeet v3 (~670 MB)";
+
+function formatMB(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
+}
+
+interface ModelDownloadProgress {
+  fileIndex: number;
+  fileCount: number;
+  overallDownloaded: number;
+  overallTotal: number;
+}
+
+const TranscribeControl: React.FC<{
+  noteId: string;
+  audioFile: string;
+  hasTranscript: boolean;
+  onTranscript: (text: string) => void;
+}> = ({ noteId, audioFile, hasTranscript, onTranscript }) => {
+  const [model, setModel] = useState<TranscriptionModelStatus | null>(null);
+  const [job, setJob] = useState<ActiveTranscription | null>(null);
+  const [download, setDownload] = useState<ModelDownloadProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmReplace, setConfirmReplace] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const refreshModel = useCallback(() => {
+    invoke<TranscriptionModelStatus>("transcription_model_status")
+      .then(setModel)
+      .catch(() => setModel(null));
+  }, []);
+
+  // Sincroniza com o backend ao montar — download/transcrição podem estar
+  // rodando desde antes do componente existir.
+  useEffect(() => {
+    refreshModel();
+    invoke<ActiveTranscription | null>("transcription_status")
+      .then((j) => setJob(j))
+      .catch(() => {});
+  }, [refreshModel]);
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const track = (p: Promise<() => void>) =>
+      p.then((u) => {
+        if (disposed) u();
+        else unlisteners.push(u);
+      });
+
+    track(
+      listen<ActiveTranscription>("transcription-progress", (e) => {
+        setJob({ ...e.payload });
+      }),
+    );
+    track(
+      listen<{ noteId: string; text: string }>("transcription-finished", (e) => {
+        setJob(null);
+        setBusy(false);
+        if (e.payload.noteId === noteId) {
+          onTranscript(e.payload.text);
+        }
+      }),
+    );
+    track(
+      listen<{ noteId: string; message: string }>("transcription-error", (e) => {
+        setJob(null);
+        setBusy(false);
+        if (e.payload.noteId === noteId) setError(e.payload.message);
+      }),
+    );
+    track(
+      listen<ModelDownloadProgress>("transcription-model-progress", (e) => {
+        setDownload(e.payload);
+      }),
+    );
+    track(
+      listen("transcription-model-finished", () => {
+        setDownload(null);
+        refreshModel();
+      }),
+    );
+    track(
+      listen<{ message: string }>("transcription-model-error", (e) => {
+        setDownload(null);
+        setError(e.payload.message);
+        refreshModel();
+      }),
+    );
+    return () => {
+      disposed = true;
+      unlisteners.forEach((u) => u());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteId]);
+
+  const startTranscription = async () => {
+    setConfirmReplace(false);
+    setError(null);
+    setBusy(true);
+    // Job otimista — o comando retorna na hora (o trabalho roda num worker) e
+    // o backend assume via eventos `transcription-progress`.
+    setJob({
+      noteId,
+      filename: audioFile,
+      phase: "decoding",
+      processedSecs: 0,
+      totalSecs: 0,
+    });
+    try {
+      await invoke("transcribe_audio", { noteId, filename: audioFile });
+    } catch (e: any) {
+      setError(String(e?.message || e));
+      setJob(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startDownload = () => {
+    setError(null);
+    setDownload({ fileIndex: 0, fileCount: 4, overallDownloaded: 0, overallTotal: 0 });
+    invoke("download_transcription_model").catch((e: any) => {
+      setError(String(e?.message || e));
+      setDownload(null);
+    });
+  };
+
+  const mine = job?.noteId === noteId;
+  const pct =
+    job && job.totalSecs > 0
+      ? Math.min(100, Math.round((job.processedSecs / job.totalSecs) * 100))
+      : 0;
+  const dlPct =
+    download && download.overallTotal > 0
+      ? Math.min(100, Math.round((download.overallDownloaded / download.overallTotal) * 100))
+      : 0;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+        padding: "8px 12px",
+        marginBottom: "10px",
+        border: "1px solid var(--color-border, #e0e0e0)",
+        background: "#f8fafc",
+        borderRadius: "8px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+        <Captions size={16} style={{ color: "var(--color-text-muted)", flexShrink: 0 }} />
+
+        {job && mine ? (
+          <>
+            <span style={{ fontSize: "12px", fontWeight: 600 }}>
+              {job.phase === "decoding"
+                ? `Preparando áudio…${job.processedSecs > 0 ? ` ${formatElapsed(Math.floor(job.processedSecs))}` : ""}`
+                : `Transcrevendo… ${formatElapsed(Math.floor(job.processedSecs))} / ${formatElapsed(Math.floor(job.totalSecs))}`}
+            </span>
+            <div
+              style={{
+                flex: 1,
+                minWidth: "60px",
+                height: "6px",
+                borderRadius: "3px",
+                background: "#e5e7eb",
+                overflow: "hidden",
+                position: "relative",
+              }}
+            >
+              {job.phase === "decoding" ? (
+                <div
+                  className="transcribe-indeterminate"
+                  style={{
+                    position: "absolute",
+                    width: "30%",
+                    height: "100%",
+                    borderRadius: "3px",
+                    background: "#2563eb",
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    width: `${pct}%`,
+                    height: "100%",
+                    borderRadius: "3px",
+                    background: "#2563eb",
+                    transition: "width 300ms linear",
+                  }}
+                />
+              )}
+            </div>
+            <button
+              type="button"
+              className="recorder-btn"
+              onClick={() => invoke("cancel_transcription").catch(() => {})}
+              title="Cancelar transcrição"
+            >
+              <X size={12} /> Cancelar
+            </button>
+          </>
+        ) : job && !mine ? (
+          <span style={{ fontSize: "12px", color: "var(--color-text-muted)" }}>
+            Há uma transcrição em andamento em outra nota — aguarde para transcrever aqui.
+          </span>
+        ) : download ? (
+          <>
+            <span style={{ fontSize: "12px", fontWeight: 600 }}>
+              Baixando modelo… {formatMB(download.overallDownloaded)}
+              {download.overallTotal > 0 ? ` / ${formatMB(download.overallTotal)}` : ""}
+            </span>
+            <div
+              style={{
+                flex: 1,
+                minWidth: "60px",
+                height: "6px",
+                borderRadius: "3px",
+                background: "#e5e7eb",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${dlPct}%`,
+                  height: "100%",
+                  borderRadius: "3px",
+                  background: "#2563eb",
+                  transition: "width 300ms linear",
+                }}
+              />
+            </div>
+            <button
+              type="button"
+              className="recorder-btn"
+              onClick={() => invoke("cancel_transcription_model_download").catch(() => {})}
+              title="Cancelar download"
+            >
+              <X size={12} /> Cancelar
+            </button>
+          </>
+        ) : model && !model.ready ? (
+          <>
+            <span style={{ fontSize: "12px", color: "var(--color-text-muted)", flex: 1 }}>
+              A transcrição roda 100% local com o modelo {MODEL_LABEL}.
+            </span>
+            <button
+              type="button"
+              className="recorder-btn"
+              onClick={startDownload}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              <Download size={12} /> Baixar modelo
+            </button>
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize: "12px", color: "var(--color-text-muted)", flex: 1 }}>
+              Gera a transcrição localmente a partir do áudio anexado (Parakeet v3).
+            </span>
+            {confirmReplace ? (
+              <button
+                type="button"
+                className="recorder-btn recorder-btn-discard"
+                onClick={startTranscription}
+                disabled={busy}
+              >
+                Substituir transcrição atual?
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="recorder-btn recorder-btn-record"
+                disabled={busy || !model}
+                onClick={() => {
+                  if (hasTranscript) setConfirmReplace(true);
+                  else startTranscription();
+                }}
+                style={{ whiteSpace: "nowrap" }}
+              >
+                {busy ? <Loader2 size={12} className="spin" /> : <Captions size={12} />}{" "}
+                Transcrever áudio
+              </button>
+            )}
+          </>
+        )}
+      </div>
+      {error && (
+        <span style={{ fontSize: "12px", color: "#cf222e" }}>Falha na transcrição: {error}</span>
       )}
     </div>
   );
@@ -948,6 +1257,14 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
           </div>
           {noteId && <MeetingRecorder noteId={noteId} />}
           {audioFile && <TranscriptAudioPlayer filename={audioFile} />}
+          {noteId && audioFile && (
+            <TranscribeControl
+              noteId={noteId}
+              audioFile={audioFile}
+              hasTranscript={localTranscript.trim().length > 0}
+              onTranscript={(t) => setLocalTranscript(t)}
+            />
+          )}
           <textarea
             value={localTranscript}
             onChange={(e) => {
