@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../context/AppContext";
 import {
   Network,
@@ -11,6 +11,9 @@ import {
   Trash2,
   Edit3,
   Search,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
 } from "lucide-react";
 import { Company, CompanyScope, CompanyType, Person } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -85,9 +88,10 @@ const OrgNode: React.FC<OrgNodeProps> = ({ person, allPeople, highlightId, filte
   return (
     <div className="org-node-container">
       <div
+        id={`org-node-${person.id}`}
         className={`org-node-card ${highlightId === person.id ? "active" : ""}`}
         onClick={() => onClick(person.id)}
-        style={{ opacity: dim ? 0.35 : 1, position: "relative" }}
+        style={{ opacity: dim ? 0.35 : 1, position: "relative", scrollMargin: "80px" }}
       >
         {person.isContact && (
           <span
@@ -359,6 +363,11 @@ export const OrganogramaView: React.FC = () => {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Company | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Company | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 1.25;
+  const adjustZoom = (delta: number) =>
+    setZoom((z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round((z + delta) * 100) / 100)));
 
   const selectedCompany = selectedCompanyId
     ? companies.find((c) => c.id === selectedCompanyId) || null
@@ -399,6 +408,34 @@ export const OrganogramaView: React.FC = () => {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db.people, selectedCompanyId, search]);
+
+  // Busca: em vez de remover nós (o que quebrava a hierarquia), mantemos a
+  // árvore inteira e destacamos/rolamos até a primeira pessoa correspondente.
+  const highlightId = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return null;
+    const scope = selectedCompanyId ? peopleByCompany(selectedCompanyId) : db.people;
+    const match = scope.find(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.role || "").toLowerCase().includes(q) ||
+        (p.department || "").toLowerCase().includes(q),
+    );
+    return match?.id ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, selectedCompanyId, db.people]);
+
+  const viewportRef = useRef<HTMLDivElement>(null);
+
+  // Rola até a pessoa destacada quando a busca muda (ou troca de modo/empresa).
+  useEffect(() => {
+    if (!highlightId) return;
+    const id = requestAnimationFrame(() => {
+      const el = document.getElementById(`org-node-${highlightId}`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [highlightId, viewMode, selectedCompanyId]);
 
   const handleSaveCompany = async (data: Omit<Company, "id">) => {
     if (editing) {
@@ -592,11 +629,44 @@ export const OrganogramaView: React.FC = () => {
       </div>
 
       {/* Body */}
-      <div className="org-chart-viewport">
+      <div className="org-chart-viewport" ref={viewportRef}>
         <div className="org-chart-instructions">
           💡 Clique em qualquer caixinha para visualizar detalhes da pessoa
         </div>
 
+        {/* Controles de zoom (modos de árvore) */}
+        {viewMode !== "area" && (
+          <div className="org-zoom-controls">
+            <button
+              className="btn-icon"
+              onClick={() => adjustZoom(-0.1)}
+              disabled={zoom <= ZOOM_MIN}
+              title="Diminuir zoom"
+            >
+              <ZoomOut size={14} />
+            </button>
+            <button
+              className="org-zoom-label"
+              onClick={() => setZoom(1)}
+              title="Restaurar zoom (100%)"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              className="btn-icon"
+              onClick={() => adjustZoom(0.1)}
+              disabled={zoom >= ZOOM_MAX}
+              title="Aumentar zoom"
+            >
+              <ZoomIn size={14} />
+            </button>
+            <button className="btn-icon" onClick={() => setZoom(1)} title="Ajustar (100%)">
+              <Maximize2 size={14} />
+            </button>
+          </div>
+        )}
+
+        <div className="org-chart-canvas" style={{ zoom: viewMode === "area" ? 1 : zoom }}>
         {viewMode === "todas" ? (
           companies.length === 0 ? (
             <div className="empty-state" style={{ padding: "64px 0" }}>
@@ -606,15 +676,8 @@ export const OrganogramaView: React.FC = () => {
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(420px, 1fr))", gap: "20px", width: "100%", marginTop: "30px" }}>
               {companies.map((c) => {
-                const cp = peopleByCompany(c.id).filter((p) => {
-                  if (!search.trim()) return true;
-                  const q = search.toLowerCase();
-                  return (
-                    p.name.toLowerCase().includes(q) ||
-                    (p.role || "").toLowerCase().includes(q) ||
-                    (p.department || "").toLowerCase().includes(q)
-                  );
-                });
+                // Mantém a árvore inteira — a busca destaca/rola, não filtra.
+                const cp = peopleByCompany(c.id);
                 return (
                   <div key={c.id} className="pane-card" style={{ padding: "16px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
@@ -635,7 +698,7 @@ export const OrganogramaView: React.FC = () => {
                       <HierarchyView
                         people={cp}
                         filter={filter}
-                        highlightId={null}
+                        highlightId={highlightId}
                         onPersonClick={handlePersonClick}
                       />
                     </div>
@@ -650,12 +713,13 @@ export const OrganogramaView: React.FC = () => {
           </div>
         ) : (
           <HierarchyView
-            people={visiblePeople}
+            people={selectedCompanyId ? peopleByCompany(selectedCompanyId) : db.people}
             filter={filter}
-            highlightId={null}
+            highlightId={highlightId}
             onPersonClick={handlePersonClick}
           />
         )}
+        </div>
       </div>
 
       {formOpen && (

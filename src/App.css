@@ -1298,7 +1298,52 @@ button {
   padding: 40px;
   display: flex;
   flex-direction: column;
+  /* stretch (não center) para que árvores mais largas que o viewport possam
+     ser roladas horizontalmente sem cortar o lado esquerdo */
+  align-items: stretch;
+}
+
+/* Canvas interno: centraliza árvores estreitas (min-width 100%) e cresce
+   além do viewport quando largas (width max-content + margin auto colapsa). */
+.org-chart-canvas {
+  width: max-content;
+  min-width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
   align-items: center;
+}
+
+/* Controles de zoom flutuantes */
+.org-zoom-controls {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background-color: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  padding: 3px;
+  box-shadow: var(--shadow-sm);
+}
+
+.org-zoom-label {
+  min-width: 42px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-main);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.org-zoom-label:hover {
+  color: var(--accent-orange);
 }
 
 .org-chart-instructions {
