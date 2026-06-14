@@ -185,16 +185,13 @@ export const NotesView: React.FC = () => {
     setSelectedEntityId(newId);
   };
 
-  const handleDateChange = async (newDate: string) => {
-    if (!selectedEntityId) return;
-    const note = db.notes.find((n) => n.id === selectedEntityId);
-    if (note && newDate) await updateNote({ ...note, date: newDate });
+  const handleDateChange = (newDate: string) => {
+    if (!newDate) return;
+    commitNoteFields({ date: newDate });
   };
 
-  const handleProjectChange = async (projId: string) => {
-    if (!selectedEntityId) return;
-    const note = db.notes.find((n) => n.id === selectedEntityId);
-    if (note) await updateNote({ ...note, projectId: projId || null });
+  const handleProjectChange = (projId: string) => {
+    commitNoteFields({ projectId: projId || null });
   };
 
   // --- Persistência com debounce de conteúdo/transcrição ---
@@ -238,6 +235,15 @@ export const NotesView: React.FC = () => {
     pendingTimerRef.current = setTimeout(() => void flushRef.current(), 700);
   };
 
+  // Mudanças discretas (data, projeto, pessoas) devem salvar IMEDIATAMENTE.
+  // Passam pelo mesmo buffer para serem mescladas com conteúdo/título ainda
+  // em debounce (evita sobrescrever edições em voo) e então faz flush na hora.
+  const commitNoteFields = (fields: Partial<Note>) => {
+    if (!selectedEntityId) return;
+    queueNoteFields(selectedEntityId, fields);
+    void flushRef.current();
+  };
+
   // Flush ao trocar de nota e ao desmontar a view
   useEffect(() => {
     return () => {
@@ -272,16 +278,17 @@ export const NotesView: React.FC = () => {
     queueNoteFields(selectedEntityId, { title: newTitle });
   };
 
-  const togglePersonParticipant = async (personId: string) => {
+  const togglePersonParticipant = (personId: string) => {
     if (!selectedEntityId) return;
-    const note = db.notes.find((n) => n.id === selectedEntityId);
-    if (note) {
-      const isTagged = note.peopleIds.includes(personId);
-      const newPeopleIds = isTagged
-        ? note.peopleIds.filter((id) => id !== personId)
-        : [...note.peopleIds, personId];
-      await updateNote({ ...note, peopleIds: newPeopleIds });
-    }
+    // Usa a nota mais fresca (inclui qualquer alteração de pessoas já em buffer)
+    const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
+    const base = pendingFieldsRef.current?.fields.peopleIds ?? note?.peopleIds;
+    if (!base) return;
+    const isTagged = base.includes(personId);
+    const newPeopleIds = isTagged
+      ? base.filter((id) => id !== personId)
+      : [...base, personId];
+    commitNoteFields({ peopleIds: newPeopleIds });
   };
 
   // Cria uma pessoa "na hora" a partir do texto buscado e já a marca na nota,
@@ -302,8 +309,9 @@ export const NotesView: React.FC = () => {
         isContact: true,
       });
       const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
-      if (note && !note.peopleIds.includes(newId)) {
-        await updateNote({ ...note, peopleIds: [...note.peopleIds, newId] });
+      const base = pendingFieldsRef.current?.fields.peopleIds ?? note?.peopleIds ?? [];
+      if (!base.includes(newId)) {
+        commitNoteFields({ peopleIds: [...base, newId] });
       }
       setParticipantSearch("");
       setIsDropdownOpen(false);
