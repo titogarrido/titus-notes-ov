@@ -190,6 +190,16 @@ export const SettingsView: React.FC = () => {
     }
   };
 
+  const handleOpenModelFolder = async () => {
+    if (!trModel?.modelDir) return;
+    setTrError(null);
+    try {
+      await revealItemInDir(trModel.modelDir);
+    } catch (e: any) {
+      setTrError(`Não foi possível abrir a pasta: ${String(e?.message || e)}`);
+    }
+  };
+
   const handleTestConnection = async () => {
     setConnStatus({ kind: "loading" });
     try {
@@ -1016,14 +1026,25 @@ export const SettingsView: React.FC = () => {
               </span>
             </div>
             {trModel?.ready ? (
-              <button
-                className="btn-secondary"
-                onClick={() => setPendingDeleteModel(true)}
-                style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap", color: "#cf222e" }}
-              >
-                <Trash2 size={14} />
-                <span>Remover modelo</span>
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                <button
+                  className="btn-secondary"
+                  onClick={handleOpenModelFolder}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+                  title={trModel.modelDir}
+                >
+                  <FolderOpen size={14} />
+                  <span>Abrir pasta</span>
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => setPendingDeleteModel(true)}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap", color: "#cf222e" }}
+                >
+                  <Trash2 size={14} />
+                  <span>Remover modelo</span>
+                </button>
+              </div>
             ) : trDownload ? (
               <button
                 className="btn-secondary"
@@ -1085,10 +1106,22 @@ export const SettingsView: React.FC = () => {
           )}
 
           {trModel?.ready && (
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1f8e3d", marginTop: 8 }}>
-              <CheckCircle2 size={14} />
-              <span>Pronto para transcrever — abra uma nota com áudio e use a aba Transcrição.</span>
-            </div>
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1f8e3d", marginTop: 8 }}>
+                <CheckCircle2 size={14} />
+                <span>Pronto para transcrever — abra uma nota com áudio e use a aba Transcrição.</span>
+              </div>
+              <div style={{ fontSize: "11px", color: "var(--color-text-muted)", marginTop: 6 }}>
+                Local do modelo:{" "}
+                <code
+                  style={{ fontSize: 11, cursor: "pointer" }}
+                  onClick={handleOpenModelFolder}
+                  title="Clique para abrir no Finder"
+                >
+                  {trModel.modelDir}
+                </code>
+              </div>
+            </>
           )}
         </div>
 
