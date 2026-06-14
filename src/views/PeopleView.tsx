@@ -29,6 +29,7 @@ export const PeopleView: React.FC = () => {
   const [filterCompanyId, setFilterCompanyId] = useState<string>("");
   const [filterDepartment, setFilterDepartment] = useState<string>("");
   const [onlyContacts, setOnlyContacts] = useState(false);
+  const [sortMode, setSortMode] = useState<"nome" | "notas" | "tarefas">("nome");
 
   // Form states
   const [name, setName] = useState("");
@@ -301,7 +302,7 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
 
   const filteredPeople = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return db.people.filter((p) => {
+    const list = db.people.filter((p) => {
       if (onlyContacts && !p.isContact) return false;
       if (filterCompanyId && p.companyId !== filterCompanyId) return false;
       if (filterDepartment && p.department !== filterDepartment) return false;
@@ -313,7 +314,22 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
         (p.department || "").toLowerCase().includes(q)
       );
     });
-  }, [db.people, search, onlyContacts, filterCompanyId, filterDepartment]);
+
+    const noteCount = (id: string) => db.notes.filter((n) => n.peopleIds.includes(id)).length;
+    const openTaskCount = (id: string) =>
+      db.tasks.filter((t) => t.personId === id && !t.completed).length;
+
+    return [...list].sort((a, b) => {
+      if (sortMode === "notas") {
+        const d = noteCount(b.id) - noteCount(a.id);
+        if (d !== 0) return d;
+      } else if (sortMode === "tarefas") {
+        const d = openTaskCount(b.id) - openTaskCount(a.id);
+        if (d !== 0) return d;
+      }
+      return a.name.localeCompare(b.name, "pt-BR");
+    });
+  }, [db.people, db.notes, db.tasks, search, onlyContacts, filterCompanyId, filterDepartment, sortMode]);
 
   const hasActiveFilter =
     !!search || !!filterCompanyId || !!filterDepartment || onlyContacts;
@@ -416,6 +432,18 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
                   ))}
                 </select>
               )}
+
+              <select
+                className="form-select"
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as typeof sortMode)}
+                style={{ height: 34, flex: "0 0 auto" }}
+                title="Ordenar pessoas"
+              >
+                <option value="nome">Ordenar: nome (A–Z)</option>
+                <option value="notas">Ordenar: mais notas</option>
+                <option value="tarefas">Ordenar: mais tarefas abertas</option>
+              </select>
 
               <button
                 type="button"
@@ -530,6 +558,26 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
                       >
                         <Star size={9} fill="currentColor" />
                         CONTATO
+                      </span>
+                    )}
+                    {person.aiProfile && (
+                      <span
+                        title="Perfil gerado por IA"
+                        style={{
+                          position: "absolute",
+                          top: 8,
+                          left: 8,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 20,
+                          height: 20,
+                          borderRadius: 10,
+                          backgroundColor: "#f3e8ff",
+                          color: "#8250df",
+                        }}
+                      >
+                        <Sparkles size={11} />
                       </span>
                     )}
                     {person.avatarUrl ? (
