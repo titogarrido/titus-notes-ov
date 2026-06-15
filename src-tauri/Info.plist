@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>O Titus Notes usa o microfone para gravar o áudio das reuniões associadas às suas notas.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>O Titus Notes captura o áudio do sistema para gravar os participantes remotos das reuniões (Zoom, Teams, Meet) mesmo quando você usa fone de ouvido. Nenhuma imagem da tela é gravada.</string>
+</dict>
+</plist>

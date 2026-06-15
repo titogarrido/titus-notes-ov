@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(cargo check *)",
+      "Bash(grep -nA5 \"exportJSON\\\\|importJSON\" /Users/titogarrido/Library/CloudStorage/SynologyDrive-macbookibm/Projetos/antigravity/notes-gr/node_modules/lexical-beautiful-mentions/MentionNode.js)",
+      "Bash(ls -la \"/Users/titogarrido/Library/Application Support/hyprnote/sessions/99d216a3-72a2-4b8f-b50d-93f18471663c\")",
+      "Read(//Users/titogarrido/Library/Application Support/hyprnote/sessions/383455ae-5ce2-4601-ba43-0971a29a98f3/**)",
+      "Bash(awk 'NR<622' /Users/titogarrido/Library/CloudStorage/SynologyDrive-macbookibm/Projetos/antigravity/notes-gr/src/views/ProjectsView.tsx)",
+      "Read(//tmp/**)",
+      "Bash(python3)",
+      "Bash(npm run *)",
+      "Bash(grep -rn \"presign_put\\\\|fn presign\" /Users/titogarrido/.cargo/registry/src/index.crates.io-*/rust-s3-0.34.0/src/ 2>&1 | head -10)",
+      "Read(//Users/titogarrido/.cargo/registry/src/**)"
+    ]
+  }
+}
