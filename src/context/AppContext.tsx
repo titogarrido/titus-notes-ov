@@ -101,6 +101,13 @@ interface AppContextType {
   setSelectedEntityId: (id: string | null) => void;
   searchOpen: boolean;
   setSearchOpen: (open: boolean) => void;
+  // Aba a abrir na próxima nota selecionada (ex.: busca casou na transcrição).
+  // Consumida e limpa pela NotesView.
+  pendingNoteTab: string | null;
+  setPendingNoteTab: (tab: string | null) => void;
+  // Termo buscado, para rolar/realçar até a ocorrência na aba de destino.
+  pendingNoteQuery: string | null;
+  setPendingNoteQuery: (q: string | null) => void;
 
   // Detecção de reunião (app externo usando o microfone)
   meetingPrompt: MeetingPrompt | null;
@@ -166,6 +173,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [currentView, setCurrentView] = useState<string>("painel");
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState<boolean>(false);
+  const [pendingNoteTab, setPendingNoteTab] = useState<string | null>(null);
+  const [pendingNoteQuery, setPendingNoteQuery] = useState<string | null>(null);
   const [dataRoot, setDataRootState] = useState<DataRootInfo | null>(null);
 
   // Load database from Rust on mount
@@ -349,10 +358,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     let disposed = false;
     const unlisteners: (() => void)[] = [];
-    listen<{ noteId: string; filename: string; reason: string }>(
+    listen<{ noteId: string; filename: string; micFilename?: string | null; reason: string }>(
       "recording-finished",
       async (e) => {
-        const { noteId, filename } = e.payload;
+        const { noteId, filename, micFilename } = e.payload;
         let oldAudio = "";
         let oldAudioUsedElsewhere = false;
         await saveDatabase((prev) => {
@@ -364,7 +373,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return {
             ...prev,
             notes: prev.notes.map((n) =>
-              n.id === noteId ? { ...n, audioFile: filename } : n,
+              n.id === noteId
+                ? {
+                    ...n,
+                    audioFile: filename,
+                    micFile: micFilename || "",
+                    updatedAt: new Date().toISOString(),
+                  }
+                : n,
             ),
           };
         });
@@ -392,14 +408,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     let disposed = false;
     const unlisteners: (() => void)[] = [];
-    listen<{ noteId: string; filename: string; text: string }>(
+    listen<{ noteId: string; filename: string; text: string; selfText?: string | null }>(
       "transcription-finished",
       async (e) => {
-        const { noteId, text } = e.payload;
+        const { noteId, text, selfText } = e.payload;
         await saveDatabase((prev) => ({
           ...prev,
           notes: prev.notes.map((n) =>
-            n.id === noteId ? { ...n, transcript: text } : n,
+            n.id === noteId
+              ? {
+                  ...n,
+                  transcript: text,
+                  updatedAt: new Date().toISOString(),
+                  // selfText presente = transcrição por canais; os sidecars já
+                  // foram consumidos e apagados no backend, então zera micFile.
+                  ...(selfText != null
+                    ? { selfTranscript: selfText, micFile: "" }
+                    : {}),
+                }
+              : n,
           ),
         }));
       },
@@ -514,7 +541,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // --- NOTES CRUD ---
   const addNote = async (noteData: Omit<Note, "id">): Promise<string> => {
     const id = `note-${Date.now()}`;
-    const newNote: Note = { ...noteData, id };
+    const newNote: Note = { ...noteData, id, updatedAt: new Date().toISOString() };
     await saveDatabase((prev) => {
       const nextNotes = [newNote, ...prev.notes];
       return {
@@ -529,11 +556,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateNote = async (updatedNote: Note) => {
     let oldNote: Note | undefined;
     let nextNotesSnapshot: Note[] = [];
+    const stamped: Note = { ...updatedNote, updatedAt: new Date().toISOString() };
     await saveDatabase((prev) => {
-      oldNote = prev.notes.find((n) => n.id === updatedNote.id);
-      const nextNotes = prev.notes.map((n) => (n.id === updatedNote.id ? updatedNote : n));
+      oldNote = prev.notes.find((n) => n.id === stamped.id);
+      const nextNotes = prev.notes.map((n) => (n.id === stamped.id ? stamped : n));
       nextNotesSnapshot = nextNotes;
-      const affectedProjects = [oldNote?.projectId, updatedNote.projectId];
+      const affectedProjects = [oldNote?.projectId, stamped.projectId];
       return {
         ...prev,
         notes: nextNotes,
@@ -543,10 +571,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (oldNote) {
       const oldImages = new Set(extractImageFilenames(oldNote.content));
-      const newImages = new Set(extractImageFilenames(updatedNote.content));
+      const newImages = new Set(extractImageFilenames(stamped.content));
       const removed = [...oldImages].filter((f) => !newImages.has(f));
       if (removed.length > 0) {
-        const referenced = collectReferencedImages(nextNotesSnapshot, updatedNote.id);
+        const referenced = collectReferencedImages(nextNotesSnapshot, stamped.id);
         const toDelete = removed.filter((f) => !referenced.has(f));
         await deleteUnreferencedImages(toDelete);
       }
@@ -778,9 +806,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const deletedSet = new Set(result.deleted);
       await saveDatabase((prev) => ({
         ...prev,
-        notes: prev.notes.map((n) =>
-          n.audioFile && deletedSet.has(n.audioFile) ? { ...n, audioFile: "" } : n,
-        ),
+        notes: prev.notes.map((n) => {
+          const audioGone = n.audioFile && deletedSet.has(n.audioFile);
+          const micGone = n.micFile && deletedSet.has(n.micFile);
+          if (!audioGone && !micGone) return n;
+          return {
+            ...n,
+            ...(audioGone ? { audioFile: "" } : {}),
+            ...(micGone ? { micFile: "", selfTranscript: "" } : {}),
+          };
+        }),
         audioCleanupLastAt: new Date().toISOString(),
       }));
     } else {
@@ -884,6 +919,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSelectedEntityId,
         searchOpen,
         setSearchOpen,
+        pendingNoteTab,
+        setPendingNoteTab,
+        pendingNoteQuery,
+        setPendingNoteQuery,
         saveDatabase,
         addCompany,
         updateCompany,

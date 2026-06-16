@@ -105,15 +105,24 @@ pub struct Note {
     pub title: String,
     pub content: String,
     pub date: String,
+    /// Timestamp ISO da última edição — usado para "notas recentes" (vazio se ausente).
+    #[serde(default)]
+    pub updated_at: String,
     pub project_id: Option<String>,
     pub people_ids: Vec<String>,
     #[serde(default)]
     pub summaries: Vec<Summary>,
     #[serde(default)]
     pub transcript: String,
+    /// Transcrição só do microfone (o que VOCÊ falou) — base para "meus" itens de ação.
+    #[serde(default)]
+    pub self_transcript: String,
     /// Nome do arquivo de áudio (relativo a files/audio/) — vazio se não houver
     #[serde(default)]
     pub audio_file: String,
+    /// Nome do sidecar mono do microfone (`*.mic.mp3`), enquanto existir em disco.
+    #[serde(default)]
+    pub mic_file: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -134,6 +143,12 @@ pub struct UserProfile {
     pub name: String,
     #[serde(default)]
     pub avatar_url: Option<String>,
+    /// Apelidos/variações de como te chamam nas reuniões.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Descrição livre das suas áreas/atividades — desempate p/ itens implícitos.
+    #[serde(default)]
+    pub responsibilities: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -608,6 +623,15 @@ fn delete_audios(app: AppHandle, filenames: Vec<String>) -> Result<(), String> {
         let mut file_path = audio_dir.clone();
         file_path.push(&filename);
         let _ = fs::remove_file(&file_path);
+        // Remove também os sidecars mono por canal (microfone e sistema), se existirem.
+        for sidecar in [
+            crate::recorder::mic_sidecar_name(&filename),
+            crate::recorder::sys_sidecar_name(&filename),
+        ] {
+            if sidecar != filename {
+                let _ = fs::remove_file(audio_dir.join(&sidecar));
+            }
+        }
     }
     Ok(())
 }

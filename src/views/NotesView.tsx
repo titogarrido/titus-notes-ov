@@ -115,7 +115,20 @@ export const NotesView: React.FC = () => {
     updateNote,
     deleteNote,
     addPerson,
+    pendingNoteTab,
+    setPendingNoteTab,
+    pendingNoteQuery,
+    setPendingNoteQuery,
   } = useApp();
+
+  // Aba + termo pedidos pela busca (ex.: match na transcrição) são consumidos
+  // pelo editor via `initialTab`/`initialQuery`; limpamos logo depois (efeito de
+  // filho roda antes do pai, então o RichTextEditor já leu os valores aqui).
+  useEffect(() => {
+    if (pendingNoteTab) setPendingNoteTab(null);
+    if (pendingNoteQuery) setPendingNoteQuery(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingNoteTab, pendingNoteQuery]);
 
   const [participantSearch, setParticipantSearch] = useState("");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -1041,6 +1054,13 @@ export const NotesView: React.FC = () => {
                 onChange={handleContentChange}
                 noteId={selectedNote.id}
                 noteTitle={selectedNote.title}
+                initialTab={(pendingNoteTab as
+                  | "content"
+                  | "transcript"
+                  | "summaries"
+                  | "actions"
+                  | null) || undefined}
+                initialQuery={pendingNoteQuery || undefined}
                 summaries={selectedNote.summaries || []}
                 templates={db.templates || []}
                 settings={

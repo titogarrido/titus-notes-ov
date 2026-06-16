@@ -78,17 +78,29 @@ export const SettingsView: React.FC = () => {
   // ---- Profile ----
   const [profileName, setProfileName] = useState(db.profile?.name || "");
   const [profileAvatar, setProfileAvatar] = useState(db.profile?.avatarUrl || "");
+  const [profileAliases, setProfileAliases] = useState((db.profile?.aliases || []).join(", "));
+  const [profileResponsibilities, setProfileResponsibilities] = useState(
+    db.profile?.responsibilities || "",
+  );
   const [profileSaved, setProfileSaved] = useState(false);
 
   useEffect(() => {
     setProfileName(db.profile?.name || "");
     setProfileAvatar(db.profile?.avatarUrl || "");
-  }, [db.profile?.name, db.profile?.avatarUrl]);
+    setProfileAliases((db.profile?.aliases || []).join(", "));
+    setProfileResponsibilities(db.profile?.responsibilities || "");
+  }, [db.profile?.name, db.profile?.avatarUrl, db.profile?.aliases, db.profile?.responsibilities]);
 
   const handleSaveProfile = async () => {
+    const aliases = profileAliases
+      .split(",")
+      .map((a) => a.trim())
+      .filter(Boolean);
     const profile: UserProfile = {
       name: profileName.trim(),
       avatarUrl: profileAvatar.trim() || undefined,
+      aliases: aliases.length ? aliases : undefined,
+      responsibilities: profileResponsibilities.trim() || undefined,
     };
     await updateProfile(profile);
     setProfileSaved(true);
@@ -909,6 +921,35 @@ export const SettingsView: React.FC = () => {
               />
             </label>
           </div>
+
+          <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)", marginTop: "12px" }}>
+            Apelidos / como te chamam nas reuniões (separados por vírgula)
+            <input
+              type="text"
+              className="form-input"
+              value={profileAliases}
+              onChange={(e) => setProfileAliases(e.target.value)}
+              placeholder="Ex.: Tito, Garrido, TG"
+            />
+            <span style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
+              Ajuda a IA a identificar os <strong>seus</strong> itens de ação nas transcrições.
+            </span>
+          </label>
+
+          <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)", marginTop: "12px" }}>
+            Suas áreas / atividades (opcional)
+            <textarea
+              className="form-input"
+              value={profileResponsibilities}
+              onChange={(e) => setProfileResponsibilities(e.target.value)}
+              placeholder="Ex.: Lidero o time de produto; cuido de roadmap, parcerias e contratações."
+              rows={2}
+              style={{ resize: "vertical", fontFamily: "inherit" }}
+            />
+            <span style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
+              Usado só como desempate quando uma tarefa é atribuída por tema, sem citar nome.
+            </span>
+          </label>
 
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "14px" }}>
             <button className="btn-primary" onClick={handleSaveProfile}>

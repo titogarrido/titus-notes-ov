@@ -97,6 +97,132 @@ ${noteText}
 Gere o sumário agora, somente em Markdown, sem comentários adicionais.`;
 }
 
+// --- Extração de itens de ação (action items) -------------------------------
+
+export interface ExtractedActionItem {
+  /** Descrição da tarefa, no infinitivo. */
+  title: string;
+  /** Nome da pessoa responsável, exatamente como aparece na lista fornecida (ou null). */
+  assignee?: string | null;
+  /** Data de vencimento em ISO yyyy-mm-dd, quando mencionada/inferível (ou null). */
+  due?: string | null;
+  /** "me" = sua tarefa; "other" = de outra pessoa; null = indefinido. */
+  owner?: "me" | "other" | null;
+}
+
+/** Identidade do usuário para separar "meus" itens de ação. */
+export interface SelfIdentity {
+  name: string;
+  aliases: string[];
+  responsibilities?: string;
+}
+
+export function buildActionItemsPrompt(
+  noteTitle: string,
+  noteText: string,
+  language: string,
+  transcript: string | undefined,
+  summaries: string[],
+  today: string,
+  peopleNames: string[],
+  me: SelfIdentity,
+  selfTranscript?: string,
+): string {
+  const lang = languageLabel(language);
+  const transcriptBlock = transcript && transcript.trim()
+    ? `\n\nTranscrição completa da reunião (fonte primária):\n"""\n${transcript.trim()}\n"""`
+    : "";
+  const summaryBlock = summaries.filter((s) => s && s.trim()).length
+    ? `\n\nSumários já gerados (use como apoio):\n"""\n${summaries.filter((s) => s && s.trim()).join("\n\n---\n\n")}\n"""`
+    : "";
+  const peopleBlock = peopleNames.length
+    ? `\n\nPessoas conhecidas (use EXATAMENTE estes nomes ao atribuir responsável):\n${peopleNames.map((n) => `- ${n}`).join("\n")}`
+    : "";
+
+  // Bloco de identidade: nomes pelos quais "você" é referido + (opcional) áreas.
+  const myNames = [me.name, ...me.aliases].map((n) => n.trim()).filter(Boolean);
+  const namesList = myNames.length ? myNames.join(", ") : "(nome não configurado)";
+  const respBlock = me.responsibilities && me.responsibilities.trim()
+    ? `\nSuas áreas/atividades (use só como desempate quando a atribuição for implícita por tema): ${me.responsibilities.trim()}`
+    : "";
+  // O canal do microfone identifica, sem ambiguidade, o que VOCÊ falou.
+  const selfBlock = selfTranscript && selfTranscript.trim()
+    ? `\n\nTrechos ditos por VOCÊ (capturados pelo seu microfone — tudo aqui foi falado por você):\n"""\n${selfTranscript.trim()}\n"""`
+    : "";
+
+  return `Você extrai itens de ação (tarefas / próximos passos) de reuniões.
+Idioma dos títulos: ${lang}.
+Data de hoje: ${today} (use para resolver datas relativas como "amanhã", "sexta", "semana que vem").
+
+VOCÊ (o usuário) é referido nas reuniões por: ${namesList}.${respBlock}
+
+Responda APENAS com um array JSON válido, sem texto antes ou depois, sem cercas de código.
+Cada elemento tem exatamente estas chaves:
+  - "title": string — a tarefa no infinitivo, objetiva e acionável.
+  - "assignee": string ou null — o responsável. Se a pessoa estiver na lista de pessoas conhecidas, use o nome EXATO de lá; caso contrário use o nome citado ou null.
+  - "due": string ou null — data de vencimento no formato "yyyy-mm-dd", apenas se houver prazo claro; senão null.
+  - "owner": "me", "other" ou null. Use "me" quando a tarefa for SUA: atribuída a você por um dos seus nomes (${namesList}), OU assumida por você em primeira pessoa ("eu vou", "deixa comigo", "fico de"), especialmente se o compromisso aparecer nos trechos ditos por VOCÊ. Se a transcrição estiver rotulada com "(Você)" e "(Outros)", trate as falas marcadas "(Você)" como suas e as "(Outros)" como de terceiros. Use "other" quando for claramente de outra pessoa. Use null se não der pra saber.
+
+Inclua somente compromissos reais e acionáveis. Não invente tarefas. Se não houver nenhuma, responda [].
+
+Título da nota: ${noteTitle || "(sem título)"}
+
+Anotações da reunião:
+"""
+${noteText}
+"""${transcriptBlock}${selfBlock}${summaryBlock}${peopleBlock}
+
+Agora responda somente com o array JSON.`;
+}
+
+/** Extrai um array JSON de uma resposta de LLM, tolerando cercas e texto ao redor. */
+export function parseActionItemsJson(raw: string): ExtractedActionItem[] {
+  if (!raw) return [];
+  let text = raw.trim();
+  // Remove cercas de código ```json ... ```
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  // Isola o primeiro array balanceado, caso haja texto ao redor.
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start !== -1 && end !== -1 && end > start) {
+    text = text.slice(start, end + 1);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: ExtractedActionItem[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const title = typeof obj.title === "string" ? obj.title.trim() : "";
+    if (!title) continue;
+    const assignee = typeof obj.assignee === "string" && obj.assignee.trim()
+      ? obj.assignee.trim()
+      : null;
+    const dueRaw = typeof obj.due === "string" ? obj.due.trim() : "";
+    const due = /^\d{4}-\d{2}-\d{2}$/.test(dueRaw) ? dueRaw : null;
+    const ownerRaw = typeof obj.owner === "string" ? obj.owner.trim().toLowerCase() : "";
+    const owner: "me" | "other" | null =
+      ownerRaw === "me" ? "me" : ownerRaw === "other" ? "other" : null;
+    out.push({ title, assignee, due, owner });
+  }
+  return out;
+}
+
+export async function extractActionItems(
+  settings: OllamaSettings,
+  prompt: string,
+  opts: GenerateOptions = {},
+): Promise<ExtractedActionItem[]> {
+  const raw = await generateSummaryWithOllama(settings, prompt, opts);
+  return parseActionItemsJson(raw);
+}
+
 export interface GenerateOptions {
   signal?: AbortSignal;
   timeoutMs?: number;

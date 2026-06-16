@@ -80,6 +80,8 @@ struct LevelPayload {
 struct FinishedPayload {
     note_id: String,
     filename: String,
+    /// Sidecar mono só do microfone (`*.mic.mp3`), quando houve áudio do sistema.
+    mic_filename: Option<String>,
     duration_secs: u64,
     size_bytes: u64,
     /// "manual" (botão parar), "auto" (silêncio) ou "meeting" (app de reunião
@@ -155,6 +157,10 @@ pub fn start_recording(
         });
         if let Err(e) = &result {
             let _ = fs::remove_file(&thread_path);
+            if let Some(name) = thread_path.file_name().and_then(|n| n.to_str()) {
+                let _ = fs::remove_file(thread_path.with_file_name(mic_sidecar_name(name)));
+                let _ = fs::remove_file(thread_path.with_file_name(sys_sidecar_name(name)));
+            }
             // Remove a si própria do estado (se ainda presente) para não deixar
             // uma gravação zumbi após um erro no meio da captura.
             let st = thread_app.state::<RecorderState>();
@@ -247,8 +253,10 @@ pub fn cancel_recording(app: AppHandle, state: State<RecorderState>) -> Result<(
     active.cancel.store(true, Ordering::Relaxed);
     active.stop.store(true, Ordering::Relaxed);
     let _ = active.handle.join();
-    let path = crate::get_audio_dir(&app)?.join(&active.filename);
-    let _ = fs::remove_file(&path);
+    let audio_dir = crate::get_audio_dir(&app)?;
+    let _ = fs::remove_file(audio_dir.join(&active.filename));
+    let _ = fs::remove_file(audio_dir.join(mic_sidecar_name(&active.filename)));
+    let _ = fs::remove_file(audio_dir.join(sys_sidecar_name(&active.filename)));
     Ok(())
 }
 
@@ -317,6 +325,87 @@ impl LinearResampler {
             self.push(mono, out);
         }
     }
+}
+
+/// Nome do sidecar mono do microfone para um arquivo de gravação `rec-*.mp3`.
+/// Ex.: `rec-2026....mp3` -> `rec-2026....mic.mp3`.
+pub fn mic_sidecar_name(main: &str) -> String {
+    sidecar_name(main, "mic")
+}
+
+/// Nome do sidecar mono do áudio do sistema (o que os outros falaram).
+/// Ex.: `rec-2026....mp3` -> `rec-2026....sys.mp3`.
+pub fn sys_sidecar_name(main: &str) -> String {
+    sidecar_name(main, "sys")
+}
+
+fn sidecar_name(main: &str, kind: &str) -> String {
+    match main.strip_suffix(".mp3") {
+        Some(stem) => format!("{}.{}.mp3", stem, kind),
+        None => format!("{}.{}.mp3", main, kind),
+    }
+}
+
+/// Cria (encoder, writer) para um sidecar opcional. `None` quando o caminho é
+/// `None` (ex.: gravação sem áudio do sistema).
+fn open_sidecar(
+    path: &Option<std::path::PathBuf>,
+    label: &str,
+) -> Result<
+    (
+        Option<mp3lame_encoder::Encoder>,
+        Option<std::io::BufWriter<fs::File>>,
+    ),
+    String,
+> {
+    match path {
+        Some(p) => {
+            let enc = build_mp3_encoder()?;
+            let f = fs::File::create(p)
+                .map_err(|e| format!("Falha ao criar o arquivo {}: {}", label, e))?;
+            Ok((Some(enc), Some(std::io::BufWriter::new(f))))
+        }
+        None => Ok((None, None)),
+    }
+}
+
+/// Finaliza (flush) um sidecar opcional, gravando o tail do MP3.
+fn finish_sidecar(
+    enc: Option<mp3lame_encoder::Encoder>,
+    w: Option<std::io::BufWriter<fs::File>>,
+) -> Result<(), String> {
+    if let (Some(mut e), Some(mut wr)) = (enc, w) {
+        let mut tail: Vec<u8> = Vec::with_capacity(7200);
+        let n = e
+            .flush::<mp3lame_encoder::FlushNoGap>(tail.spare_capacity_mut())
+            .map_err(|e| format!("Falha ao finalizar sidecar MP3: {:?}", e))?;
+        // SAFETY: o encoder inicializou exatamente `n` bytes do spare capacity.
+        unsafe { tail.set_len(n) };
+        wr.write_all(&tail).map_err(|e| e.to_string())?;
+        wr.flush().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Cria um encoder LAME mono 16 kHz @ 32 kbps (mesma config da saída mixada).
+fn build_mp3_encoder() -> Result<mp3lame_encoder::Encoder, String> {
+    let mut builder =
+        mp3lame_encoder::Builder::new().ok_or("Falha ao criar o encoder LAME".to_string())?;
+    builder
+        .set_num_channels(1)
+        .map_err(|e| format!("LAME canais: {:?}", e))?;
+    builder
+        .set_sample_rate(TARGET_SAMPLE_RATE)
+        .map_err(|e| format!("LAME sample rate: {:?}", e))?;
+    builder
+        .set_brate(TARGET_BITRATE)
+        .map_err(|e| format!("LAME bitrate: {:?}", e))?;
+    builder
+        .set_quality(mp3lame_encoder::Quality::Good)
+        .map_err(|e| format!("LAME qualidade: {:?}", e))?;
+    builder
+        .build()
+        .map_err(|e| format!("Falha ao inicializar o encoder LAME: {:?}", e))
 }
 
 fn encode_and_write(
@@ -528,37 +617,35 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
     };
     drop(tx);
 
+    let has_system_audio = sys_stream.is_some();
     let _ = job.ready_tx.send(Ok(StartInfo {
-        system_audio: sys_stream.is_some(),
+        system_audio: has_system_audio,
         warning,
     }));
 
-    let mut builder =
-        mp3lame_encoder::Builder::new().ok_or("Falha ao criar o encoder LAME".to_string())?;
-    builder
-        .set_num_channels(1)
-        .map_err(|e| format!("LAME canais: {:?}", e))?;
-    builder
-        .set_sample_rate(TARGET_SAMPLE_RATE)
-        .map_err(|e| format!("LAME sample rate: {:?}", e))?;
-    builder
-        .set_brate(TARGET_BITRATE)
-        .map_err(|e| format!("LAME bitrate: {:?}", e))?;
-    builder
-        .set_quality(mp3lame_encoder::Quality::Good)
-        .map_err(|e| format!("LAME qualidade: {:?}", e))?;
-    let mut encoder = builder
-        .build()
-        .map_err(|e| format!("Falha ao inicializar o encoder LAME: {:?}", e))?;
+    let mut encoder = build_mp3_encoder()?;
 
     let file =
         fs::File::create(&job.path).map_err(|e| format!("Falha ao criar o arquivo: {}", e))?;
     let mut writer = std::io::BufWriter::new(file);
 
+    // Sidecars mono separados por canal — habilitados apenas quando há áudio do
+    // sistema (sem ele, o mixado já é só o microfone). Cada canal é gravado no
+    // seu nível nativo (sem o desbalanceamento da mistura), o que permite
+    // transcrever microfone e sistema isoladamente e mesclar com rótulo de quem
+    // falou — base para os "meus" itens de ação.
+    let mic_filename = has_system_audio.then(|| mic_sidecar_name(&job.filename));
+    let sys_filename = has_system_audio.then(|| sys_sidecar_name(&job.filename));
+    let mic_path = mic_filename.as_ref().map(|n| job.path.with_file_name(n));
+    let sys_path = sys_filename.as_ref().map(|n| job.path.with_file_name(n));
+    let (mut mic_encoder, mut mic_writer) = open_sidecar(&mic_path, "do microfone")?;
+    let (mut sys_encoder, mut sys_writer) = open_sidecar(&sys_path, "do sistema")?;
+
     let mut resampler = LinearResampler::new(in_rate, TARGET_SAMPLE_RATE);
     let mut mic_fifo: Vec<f32> = Vec::with_capacity(ENCODE_CHUNK_SAMPLES * 4);
     let mut sys_fifo: Vec<f32> = Vec::with_capacity(SYS_FIFO_MAX_SAMPLES);
     let mut pcm_i16: Vec<i16> = Vec::with_capacity(ENCODE_CHUNK_SAMPLES);
+    let mut side_pcm: Vec<i16> = Vec::with_capacity(ENCODE_CHUNK_SAMPLES);
     let mut total_samples: u64 = 0;
     let mut peak = 0f32;
     let mut last_level_emit = Instant::now();
@@ -566,8 +653,9 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
     // "manual" = stop_recording assumiu o estado; nos demais a thread se remove.
     let mut finish_reason = "manual";
 
-    // Mixa um lote: mic é o clock mestre; o sistema entra do FIFO (zeros se
-    // faltar). Retorna o RMS do lote para a detecção de silêncio.
+    // Processa um lote: mic é o clock mestre; o sistema entra do FIFO (zeros se
+    // faltar). Grava os sidecars por canal (microfone pré-mix e sistema alinhado)
+    // e o arquivo mixado para playback. Retorna o RMS do mix p/ detecção de silêncio.
     let mut mix_and_encode = |mic_chunk: &mut Vec<f32>,
                               sys_fifo: &mut Vec<f32>,
                               encoder: &mut mp3lame_encoder::Encoder,
@@ -578,7 +666,30 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
         if mic_chunk.is_empty() {
             return Ok(0.0);
         }
-        let take = mic_chunk.len().min(sys_fifo.len());
+        let n = mic_chunk.len();
+        let take = n.min(sys_fifo.len());
+
+        // Sidecar do microfone (pré-mix) — o que VOCÊ falou.
+        if let (Some(enc), Some(w)) = (mic_encoder.as_mut(), mic_writer.as_mut()) {
+            side_pcm.clear();
+            for v in mic_chunk.iter() {
+                let v = v.clamp(-1.0, 1.0);
+                side_pcm.push((v * i16::MAX as f32) as i16);
+            }
+            encode_and_write(enc, &side_pcm, w)?;
+        }
+        // Sidecar do sistema (alinhado ao mic, zero-padded) — o que os OUTROS falaram.
+        if let (Some(enc), Some(w)) = (sys_encoder.as_mut(), sys_writer.as_mut()) {
+            side_pcm.clear();
+            for i in 0..n {
+                let v = if i < take { sys_fifo[i] } else { 0.0 };
+                let v = v.clamp(-1.0, 1.0);
+                side_pcm.push((v * i16::MAX as f32) as i16);
+            }
+            encode_and_write(enc, &side_pcm, w)?;
+        }
+
+        // Mix: soma o sistema no microfone e codifica o arquivo principal.
         for (i, s) in sys_fifo.drain(..take).enumerate() {
             mic_chunk[i] += s;
         }
@@ -593,8 +704,8 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
             sq_sum += (v as f64) * (v as f64);
             pcm_i16.push((v * i16::MAX as f32) as i16);
         }
-        let rms = (sq_sum / mic_chunk.len() as f64).sqrt() as f32;
-        *total += mic_chunk.len() as u64;
+        let rms = (sq_sum / n as f64).sqrt() as f32;
+        *total += n as u64;
         encode_and_write(encoder, &pcm_i16, writer)?;
         mic_chunk.clear();
         Ok(rms)
@@ -659,7 +770,15 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
         let _ = s.stop_capture();
     }
     if job.cancel.load(Ordering::Relaxed) {
-        // Descarte: o comando cancel_recording apaga o arquivo.
+        // Descarte: o comando cancel_recording apaga o arquivo principal; aqui
+        // soltamos e removemos os sidecars por canal.
+        drop(mic_writer.take());
+        drop(mic_encoder.take());
+        drop(sys_writer.take());
+        drop(sys_encoder.take());
+        for p in [mic_path.as_ref(), sys_path.as_ref()].into_iter().flatten() {
+            let _ = fs::remove_file(p);
+        }
         return Ok(());
     }
     while let Ok(msg) = rx.try_recv() {
@@ -686,6 +805,10 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
     writer.write_all(&tail).map_err(|e| e.to_string())?;
     writer.flush().map_err(|e| e.to_string())?;
 
+    // Finaliza os sidecars por canal, se houver.
+    finish_sidecar(mic_encoder.take(), mic_writer.take())?;
+    finish_sidecar(sys_encoder.take(), sys_writer.take())?;
+
     // Nos encerramentos automáticos (silêncio/fim de reunião) a thread é dona
     // do encerramento: remove a gravação do estado antes de anunciar. No stop
     // manual o comando já a removeu.
@@ -704,6 +827,7 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
         FinishedPayload {
             note_id: job.note_id.clone(),
             filename: job.filename.clone(),
+            mic_filename: mic_filename.clone(),
             duration_secs: total_samples / TARGET_SAMPLE_RATE as u64,
             size_bytes,
             reason: finish_reason.to_string(),

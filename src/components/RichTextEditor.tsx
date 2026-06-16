@@ -2,9 +2,10 @@ import React, { useRef, useState, useMemo, useCallback, useEffect } from "react"
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./RichTextEditor.css";
-import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2, Captions, Download, Loader2, X, Check } from "lucide-react";
+import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2, Captions, Download, Loader2, X, Check, ListChecks } from "lucide-react";
 import { Summary, SummaryTemplate, OllamaSettings } from "../types";
 import { SummariesPanel } from "./SummariesPanel";
+import { ActionItemsPanel } from "./ActionItemsPanel";
 import { NoteSidePanel } from "./lexical/NoteSidePanel";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
@@ -74,6 +75,10 @@ interface RichTextEditorProps {
   onTranscriptChange?: (t: string) => void;
   /** Arquivo de áudio em files/audio/ — quando presente, mostra um mini player na aba Transcrição */
   audioFile?: string;
+  /** Aba inicial ao montar (ex.: abrir direto na transcrição vinda da busca). */
+  initialTab?: "content" | "transcript" | "summaries" | "actions";
+  /** Termo buscado — rola/realça até a ocorrência na aba de destino. */
+  initialQuery?: string;
 }
 
 // ----- Mini player de áudio (usa asset protocol — streaming, sem IPC pesado) -----
@@ -1056,13 +1061,73 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   onTranscriptChange,
   audioFile,
   noteId = "",
+  initialTab,
+  initialQuery,
 }) => {
   const { db, setCurrentView, setSelectedEntityId } = useApp();
   const isReadyRef = useRef(false);
+  const transcriptRef = useRef<HTMLTextAreaElement>(null);
   const summariesEnabled =
     !!summaries && !!templates && !!settings && !!onAddSummary && !!onUpdateSummary && !!onDeleteSummary;
   const transcriptEnabled = !!onTranscriptChange;
-  const [tab, setTab] = useState<"content" | "transcript" | "summaries">("content");
+  // Itens de ação dependem do mesmo contexto de IA dos sumários (settings + nota).
+  const actionItemsEnabled = summariesEnabled && !!noteId;
+  // Aba inicial: respeita `initialTab` (ex.: busca abriu na transcrição), mas só
+  // se a aba correspondente estiver habilitada; senão cai no conteúdo.
+  const [tab, setTab] = useState<"content" | "transcript" | "summaries" | "actions">(() => {
+    if (initialTab === "transcript" && transcriptEnabled) return "transcript";
+    if (initialTab === "summaries" && summariesEnabled) return "summaries";
+    if (initialTab === "actions" && actionItemsEnabled) return "actions";
+    return "content";
+  });
+
+  // Quando `initialTab` muda (ex.: busca pediu transcrição na MESMA nota já
+  // aberta, sem remontar), troca a aba ativa se ela estiver habilitada.
+  useEffect(() => {
+    if (!initialTab) return;
+    if (initialTab === "transcript" && transcriptEnabled) setTab("transcript");
+    else if (initialTab === "summaries" && summariesEnabled) setTab("summaries");
+    else if (initialTab === "actions" && actionItemsEnabled) setTab("actions");
+    else if (initialTab === "content") setTab("content");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTab]);
+
+  // "Latch" do termo da busca p/ revelar na transcrição: capturado durante o
+  // render (antes do pai limpar o estado global) e preservado até a aba montar.
+  const revealQueryRef = useRef<string | null>(null);
+  if (initialQuery && initialTab === "transcript") {
+    revealQueryRef.current = initialQuery;
+  }
+
+  // Ao abrir/entrar na aba Transcrição com um termo pendente, foca, seleciona e
+  // rola até a primeira ocorrência (estimativa por linha — boa o suficiente).
+  useEffect(() => {
+    if (tab !== "transcript") return;
+    const q = revealQueryRef.current;
+    if (!q) return;
+    const ta = transcriptRef.current;
+    if (!ta) return;
+    const idx = localTranscript.toLowerCase().indexOf(q.toLowerCase());
+    if (idx < 0) {
+      revealQueryRef.current = null;
+      return;
+    }
+    const raf = requestAnimationFrame(() => {
+      ta.focus();
+      try {
+        ta.setSelectionRange(idx, idx + q.length);
+      } catch {
+        /* navegadores antigos */
+      }
+      const line = localTranscript.slice(0, idx).split("\n").length - 1;
+      const cs = getComputedStyle(ta);
+      const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5 || 18;
+      ta.scrollTop = Math.max(0, line * lh - ta.clientHeight / 3);
+      revealQueryRef.current = null;
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
   const [showSidePanel, setShowSidePanel] = useState(true);
   // Estado local da transcrição: a persistência é debounced no NotesView, e
   // uma textarea controlada pelo db "engoliria" teclas até o flush. O
@@ -1322,6 +1387,15 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
               )}
             </button>
           )}
+          {actionItemsEnabled && (
+            <button
+              type="button"
+              className={`editor-tab ${tab === "actions" ? "active" : ""}`}
+              onClick={() => setTab("actions")}
+            >
+              <ListChecks size={14} /> <span>Ações</span>
+            </button>
+          )}
 
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
             {noteId && (
@@ -1356,6 +1430,17 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
           onAddSummary={onAddSummary!}
           onUpdateSummary={onUpdateSummary!}
           onDeleteSummary={onDeleteSummary!}
+        />
+      )}
+
+      {actionItemsEnabled && tab === "actions" && (
+        <ActionItemsPanel
+          noteId={noteId}
+          noteTitle={noteTitle || ""}
+          noteContent={value}
+          transcript={localTranscript}
+          summaries={summaries!}
+          settings={settings!}
         />
       )}
 
@@ -1394,6 +1479,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             />
           )}
           <textarea
+            ref={transcriptRef}
             value={localTranscript}
             onChange={(e) => {
               setLocalTranscript(e.target.value);

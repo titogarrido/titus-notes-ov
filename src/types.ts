@@ -80,13 +80,20 @@ export interface Note {
   id: string;
   title: string;
   content: string;
+  /** Data da reunião (yyyy-mm-dd) — usada para agrupar/calendário. */
   date: string;
+  /** Timestamp ISO da última edição — usado para "notas recentes". */
+  updatedAt?: string;
   projectId: string | null;
   peopleIds: string[];
   summaries?: Summary[];
   transcript?: string;
+  /** Transcrição apenas do seu microfone (o que VOCÊ falou) — base para "meus" itens de ação */
+  selfTranscript?: string;
   /** Nome do arquivo de áudio em files/audio/ — vazio/ausente quando não há gravação */
   audioFile?: string;
+  /** Nome do arquivo de áudio só do microfone (sidecar `*.mic.mp3`), quando houve áudio do sistema */
+  micFile?: string;
 }
 
 export interface OllamaSettings {
@@ -114,6 +121,10 @@ export interface Task {
 export interface UserProfile {
   name: string;
   avatarUrl?: string;
+  /** Apelidos/variações de como te chamam nas reuniões (ex.: "Tito", "Garrido") */
+  aliases?: string[];
+  /** Descrição livre das suas áreas/atividades — desempate para atribuir itens implícitos */
+  responsibilities?: string;
 }
 
 export interface DataRootInfo {

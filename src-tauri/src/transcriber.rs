@@ -31,6 +31,9 @@ const MODEL_FILES: [&str; 4] = [
 const SAMPLE_RATE: u32 = 16_000;
 /// Tamanho alvo de cada fatia transcrita de uma vez.
 const CHUNK_SECS: f32 = 60.0;
+/// Fatia menor na transcrição por canais — timestamps mais frequentes melhoram
+/// o entrelaçamento (turnos) ao mesclar microfone + sistema.
+const CHANNEL_CHUNK_SECS: f32 = 20.0;
 /// Janela (± segundos em torno do alvo) onde se procura o ponto mais silencioso pro corte.
 const SPLIT_SEARCH_SECS: f32 = 5.0;
 /// Frame de análise de energia (30 ms @ 16 kHz).
@@ -346,10 +349,15 @@ pub fn transcribe_audio(
             }
 
             match &result {
-                Ok(text) => {
+                Ok((text, self_text)) => {
                     let _ = app.emit(
                         "transcription-finished",
-                        serde_json::json!({ "noteId": note_id, "filename": filename, "text": text }),
+                        serde_json::json!({
+                            "noteId": note_id,
+                            "filename": filename,
+                            "text": text,
+                            "selfText": self_text,
+                        }),
                     );
                 }
                 Err(msg) => {
@@ -365,18 +373,35 @@ pub fn transcribe_audio(
     Ok(())
 }
 
+/// Retorna `(transcrição, Option<transcrição_só_do_microfone>)`.
+///
+/// Quando existem os sidecars por canal (`*.mic.mp3` + `*.sys.mp3`), transcreve
+/// cada canal isolado (no nível nativo, sem o desbalanceamento da mistura) e os
+/// mescla num transcript rotulado por quem falou. A segunda parte (microfone) é
+/// o que VOCÊ falou — base para a IA separar os "meus" itens de ação.
+/// Sem os sidecars, transcreve o arquivo único normalmente.
 fn run_transcription(
     app: &AppHandle,
     state: &TranscriberState,
     model_dir: &PathBuf,
     note_id: &str,
     filename: &str,
-) -> Result<String, String> {
-    let mut audio_path = crate::get_audio_dir(app)?;
-    audio_path.push(filename);
+) -> Result<(String, Option<String>), String> {
+    let audio_dir = crate::get_audio_dir(app)?;
 
-    // Primeiro evento imediato — a UI mostra "Preparando áudio…" sem esperar
-    // a decodificação terminar.
+    // Modo por canais: precisa dos dois sidecars (mic + sistema).
+    let mic_name = crate::recorder::mic_sidecar_name(filename);
+    let sys_name = crate::recorder::sys_sidecar_name(filename);
+    let mic_path = audio_dir.join(&mic_name);
+    let sys_path = audio_dir.join(&sys_name);
+    if mic_name != filename && mic_path.exists() && sys_path.exists() {
+        return run_channel_transcription(
+            app, state, model_dir, note_id, filename, &mic_path, &sys_path,
+        );
+    }
+
+    // Fallback: arquivo único (gravações sem áudio do sistema, importadas ou coladas).
+    let audio_path = audio_dir.join(filename);
     update_progress(app, state, note_id, filename, "decoding", 0.0, 0.0);
 
     let mut last_emit = std::time::Instant::now();
@@ -397,38 +422,125 @@ fn run_transcription(
     let mut model = ParakeetModel::load(model_dir, &Quantization::Int8)
         .map_err(|e| format!("Falha ao carregar o modelo: {}", e))?;
 
-    transcribe_samples_chunked(&mut model, &samples, |processed_secs| {
+    let text = transcribe_samples_chunked(&mut model, &samples, |processed_secs| {
         if state.cancel.load(Ordering::SeqCst) {
             return false;
         }
-        update_progress(
-            app,
-            state,
-            note_id,
-            filename,
-            "transcribing",
-            processed_secs,
-            total_secs,
-        );
+        update_progress(app, state, note_id, filename, "transcribing", processed_secs, total_secs);
         true
-    })
+    })?;
+
+    Ok((text, None))
 }
 
-/// Fatia o áudio em janelas de ~CHUNK_SECS (cortando em pausas), transcreve
-/// cada fatia e monta o texto final com um timestamp por parágrafo.
+/// Transcrição por canais separados: microfone (Você) + sistema (Outros),
+/// cada um no seu nível nativo, mesclados por tempo. Resolve o caso do áudio
+/// remoto que some ao transcrever só a mistura. Em sucesso, apaga os sidecars
+/// (mantemos só o texto + o MP3 mixado para playback).
+fn run_channel_transcription(
+    app: &AppHandle,
+    state: &TranscriberState,
+    model_dir: &PathBuf,
+    note_id: &str,
+    filename: &str,
+    mic_path: &PathBuf,
+    sys_path: &PathBuf,
+) -> Result<(String, Option<String>), String> {
+    update_progress(app, state, note_id, filename, "decoding", 0.0, 0.0);
+
+    let mut last_emit = std::time::Instant::now();
+    let mic_samples = decode_to_16k_mono(mic_path, |decoded_secs| {
+        let now = std::time::Instant::now();
+        if now.duration_since(last_emit).as_millis() >= 500 {
+            update_progress(app, state, note_id, filename, "decoding", decoded_secs, 0.0);
+            last_emit = now;
+        }
+        !state.cancel.load(Ordering::SeqCst)
+    })?;
+    let sys_samples = decode_to_16k_mono(sys_path, |_| !state.cancel.load(Ordering::SeqCst))?;
+    if mic_samples.is_empty() && sys_samples.is_empty() {
+        return Err("Áudio vazio ou ilegível.".to_string());
+    }
+
+    let mic_secs = mic_samples.len() as f32 / SAMPLE_RATE as f32;
+    let sys_secs = sys_samples.len() as f32 / SAMPLE_RATE as f32;
+    let total_secs = mic_secs + sys_secs;
+    update_progress(app, state, note_id, filename, "transcribing", 0.0, total_secs);
+
+    let mut model = ParakeetModel::load(model_dir, &Quantization::Int8)
+        .map_err(|e| format!("Falha ao carregar o modelo: {}", e))?;
+
+    // Canal do microfone (Você).
+    let mic_segs = transcribe_samples_segments(
+        &mut model,
+        &mic_samples,
+        CHANNEL_CHUNK_SECS,
+        |processed_secs| {
+            if state.cancel.load(Ordering::SeqCst) {
+                return false;
+            }
+            update_progress(app, state, note_id, filename, "transcribing", processed_secs, total_secs);
+            true
+        },
+    )?;
+
+    // Canal do sistema (Outros) — continua a barra de onde o microfone parou.
+    let sys_segs = transcribe_samples_segments(
+        &mut model,
+        &sys_samples,
+        CHANNEL_CHUNK_SECS,
+        |processed_secs| {
+            if state.cancel.load(Ordering::SeqCst) {
+                return false;
+            }
+            update_progress(
+                app,
+                state,
+                note_id,
+                filename,
+                "transcribing",
+                mic_secs + processed_secs,
+                total_secs,
+            );
+            true
+        },
+    )?;
+
+    let merged = merge_labeled(&mic_segs, "Você", &sys_segs, "Outros");
+    let self_text = mic_segs
+        .iter()
+        .map(|(t, s)| format!("[{}] {}", format_timestamp(*t), s))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let self_text = if self_text.trim().is_empty() {
+        None
+    } else {
+        Some(self_text)
+    };
+
+    // Sucesso: os sidecars já cumpriram o papel — apaga para não dobrar o disco.
+    let _ = fs::remove_file(mic_path);
+    let _ = fs::remove_file(sys_path);
+
+    Ok((merged, self_text))
+}
+
+/// Fatia o áudio em janelas de ~`chunk_secs` (cortando em pausas) e transcreve
+/// cada fatia, retornando segmentos `(início_em_segundos, texto)`.
 ///
 /// `on_progress(processed_secs)` é chamado após cada fatia; retornar `false`
 /// cancela o trabalho.
-pub fn transcribe_samples_chunked(
+pub fn transcribe_samples_segments(
     model: &mut ParakeetModel,
     samples: &[f32],
+    chunk_secs: f32,
     mut on_progress: impl FnMut(f32) -> bool,
-) -> Result<String, String> {
-    let target = (CHUNK_SECS * SAMPLE_RATE as f32) as usize;
+) -> Result<Vec<(f32, String)>, String> {
+    let target = (chunk_secs * SAMPLE_RATE as f32) as usize;
     let search = (SPLIT_SEARCH_SECS * SAMPLE_RATE as f32) as usize;
     let min_chunk = SAMPLE_RATE as usize; // 1 s — fatias menores são zero-padded
 
-    let mut lines: Vec<String> = Vec::new();
+    let mut segments: Vec<(f32, String)> = Vec::new();
     let mut pos: usize = 0;
     while pos < samples.len() {
         let remaining = samples.len() - pos;
@@ -448,11 +560,7 @@ pub fn transcribe_samples_chunked(
             .map_err(|e| format!("Falha na inferência: {}", e))?;
         let text = result.text.trim().to_string();
         if !text.is_empty() {
-            lines.push(format!(
-                "[{}] {}",
-                format_timestamp(pos as f32 / SAMPLE_RATE as f32),
-                text
-            ));
+            segments.push((pos as f32 / SAMPLE_RATE as f32, text));
         }
 
         pos = end;
@@ -461,7 +569,44 @@ pub fn transcribe_samples_chunked(
         }
     }
 
-    Ok(lines.join("\n\n"))
+    Ok(segments)
+}
+
+/// Como `transcribe_samples_segments`, mas devolve o texto já formatado com um
+/// timestamp por parágrafo (fatias de ~CHUNK_SECS).
+pub fn transcribe_samples_chunked(
+    model: &mut ParakeetModel,
+    samples: &[f32],
+    on_progress: impl FnMut(f32) -> bool,
+) -> Result<String, String> {
+    let segments = transcribe_samples_segments(model, samples, CHUNK_SECS, on_progress)?;
+    Ok(segments
+        .into_iter()
+        .map(|(t, s)| format!("[{}] {}", format_timestamp(t), s))
+        .collect::<Vec<_>>()
+        .join("\n\n"))
+}
+
+/// Mescla segmentos de dois canais num transcript único, ordenado por tempo e
+/// rotulado com quem falou. Ex.: `[0:09] (Outros) ...`.
+fn merge_labeled(
+    a: &[(f32, String)],
+    label_a: &str,
+    b: &[(f32, String)],
+    label_b: &str,
+) -> String {
+    let mut all: Vec<(f32, &str, &str)> = Vec::with_capacity(a.len() + b.len());
+    for (t, s) in a {
+        all.push((*t, label_a, s.as_str()));
+    }
+    for (t, s) in b {
+        all.push((*t, label_b, s.as_str()));
+    }
+    all.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+    all.into_iter()
+        .map(|(t, label, text)| format!("[{}] ({}) {}", format_timestamp(t), label, text))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 fn update_progress(

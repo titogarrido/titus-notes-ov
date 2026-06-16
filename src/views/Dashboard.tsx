@@ -14,6 +14,7 @@ import {
   Calendar,
   AlertTriangle,
 } from "lucide-react";
+import { Note } from "../types";
 
 // --- helpers ---
 
@@ -278,9 +279,10 @@ export const Dashboard: React.FC = () => {
   const isFirstRun =
     db.projects.length === 0 && db.notes.length === 0 && db.people.length === 0;
 
-  // ----- Notas recentes -----
+  // ----- Notas recentes (por última edição; cai para a data da reunião) -----
+  const noteRecency = (n: Note) => n.updatedAt || n.date || "";
   const recentNotes = [...db.notes]
-    .sort((a, b) => b.date.localeCompare(a.date))
+    .sort((a, b) => noteRecency(b).localeCompare(noteRecency(a)))
     .slice(0, 3);
 
   // ----- handlers -----

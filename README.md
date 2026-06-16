@@ -30,14 +30,23 @@ sem servidor.
 - Salvamento imediato ao mudar data, projeto ou pessoas
 
 ### 🎙️ Gravação e transcrição
-- Captura simultânea de **microfone + áudio do sistema**
-- Codificação em MP3 mono (16 kHz / 32 kbps), leve para armazenar
+- Captura simultânea de **microfone + áudio do sistema** (mixados num MP3 mono
+  16 kHz / 32 kbps para ouvir, e em **canais separados** durante a gravação)
 - **Transcrição 100% local** com Parakeet v3 (`parakeet-tdt-0.6b-v3`, ONNX) — o modelo é
   baixado uma única vez sob demanda
+- **Transcrição por canais com rótulo de locutor**: o seu microfone e o áudio do sistema
+  são transcritos **separadamente** (cada um no nível nativo, sem o desbalanceamento da
+  mistura) e mesclados por tempo, marcando **(Você)** e **(Outros)**. Isso garante que a
+  voz remota apareça no texto e dá atribuição de quem falou de graça
 - Limpeza automática de áudios antigos (por idade, agendável)
 
 ### 🤖 IA local (Ollama)
 - Resumos de notas e projetos com **templates** personalizáveis
+- **Itens de ação**: extrai os próximos passos da reunião (anotações + transcrição +
+  sumários) e cria **tarefas** já vinculadas ao projeto, responsável e vencimento
+- **Separa os SEUS itens de ação**: usa a transcrição rotulada por canal (o que **você**
+  falou vs. **outros**) e seus nome/apelidos do perfil para marcar o que ficou com você —
+  "deixa comigo" dito por você vira tarefa sua com certeza. Filtro **"Somente meus"** no painel
 - Chat contextual sobre uma nota ou um projeto
 - Perfis de pessoas gerados por IA
 - Tudo roda na sua máquina via Ollama (modelo e idioma configuráveis — PT/EN/ES/FR)
@@ -55,7 +64,8 @@ sem servidor.
 ### 🗂️ Produtividade
 - **Painel** com visão geral, notas recentes e tarefas pendentes
 - **Calendário** integrado a notas e tarefas
-- **Busca global** (`⌘K`) em notas, pessoas, projetos e tarefas
+- **Busca global** (`⌘K`) em notas (incluindo **corpo de transcrições e resumos**),
+  pessoas, projetos e tarefas — com trecho de contexto e termo destacado
 
 ### 🔄 Dados, backup e atualizações
 - Banco de dados local em JSON (pasta configurável)
