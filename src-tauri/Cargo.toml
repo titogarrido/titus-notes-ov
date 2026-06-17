@@ -1,6 +1,6 @@
 [package]
 name = "titus-notes"
-version = "1.0.0"
+version = "1.1.0"
 description = "Titus Notes"
 authors = ["Tito Garrido"]
 edition = "2021"
