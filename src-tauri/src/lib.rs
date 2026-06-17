@@ -188,6 +188,9 @@ pub struct Database {
     pub hyprnote_path: String,
     #[serde(default)]
     pub profile: Option<UserProfile>,
+    /// "batch" (padrão/vazio) ou "realtime" — transcrição ao vivo durante a gravação.
+    #[serde(default)]
+    pub transcription_mode: String,
     #[serde(default)]
     pub s3_schedule: String,
     #[serde(default)]
@@ -307,6 +310,7 @@ fn get_initial_database() -> Database {
         templates,
         hyprnote_path: String::new(),
         profile: None,
+        transcription_mode: String::new(),
         s3_schedule: String::new(),
         s3_last_backup_at: String::new(),
         s3_retention: 0,

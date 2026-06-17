@@ -506,6 +506,7 @@ const RecordingTabControl: React.FC<{
   hideStart?: boolean;
   onOpenTranscript?: () => void;
 }> = ({ noteId, hideStart, onOpenTranscript }) => {
+  const { db } = useApp();
   const [state, setState] = useState<"idle" | "mine" | "other" | "busy">("idle");
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -570,6 +571,7 @@ const RecordingTabControl: React.FC<{
         noteId,
         autoStopSecs: loadAutoStopSecs(),
         systemAudio: true,
+        live: db.transcriptionMode === "realtime",
       });
       setElapsed(0);
       setState("mine");
@@ -665,6 +667,7 @@ const RecordingTabControl: React.FC<{
 };
 
 const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
+  const { db } = useApp();
   const [state, setState] = useState<"idle" | "recording" | "other" | "busy">("idle");
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
@@ -784,6 +787,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
         noteId,
         autoStopSecs,
         systemAudio: true,
+        live: db.transcriptionMode === "realtime",
       });
       setElapsed(0);
       setLevel(0);
@@ -1064,9 +1068,11 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   initialTab,
   initialQuery,
 }) => {
-  const { db, setCurrentView, setSelectedEntityId } = useApp();
+  const { db, setCurrentView, setSelectedEntityId, liveTranscribingNoteId } = useApp();
   const isReadyRef = useRef(false);
   const transcriptRef = useRef<HTMLTextAreaElement>(null);
+  // Esta nota está sendo transcrita ao vivo agora?
+  const liveActive = !!noteId && liveTranscribingNoteId === noteId;
   const summariesEnabled =
     !!summaries && !!templates && !!settings && !!onAddSummary && !!onUpdateSummary && !!onDeleteSummary;
   const transcriptEnabled = !!onTranscriptChange;
@@ -1091,6 +1097,16 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     else if (initialTab === "content") setTab("content");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTab]);
+
+  // Transcrição ao vivo: reflete no textarea o transcript que cresce no banco,
+  // sem atropelar uma edição manual (só sincroniza se o campo não está focado).
+  useEffect(() => {
+    if (!liveActive) return;
+    if (document.activeElement !== transcriptRef.current) {
+      setLocalTranscript(transcript || "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcript, liveActive]);
 
   // "Latch" do termo da busca p/ revelar na transcrição: capturado durante o
   // render (antes do pai limpar o estado global) e preservado até a aba montar.
@@ -1459,6 +1475,23 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             <div>
               <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700, display: "flex", alignItems: "center", gap: "6px" }}>
                 <Mic size={16} /> Transcrição da reunião
+                {liveActive && (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      padding: "2px 8px",
+                      borderRadius: 999,
+                      background: "#fdecec",
+                      color: "#cf222e",
+                    }}
+                  >
+                    <span className="live-dot" /> ao vivo
+                  </span>
+                )}
               </h3>
               <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: "var(--color-text-muted)" }}>
                 Cole aqui o texto bruto da transcrição. Será usado como fonte primária ao gerar sumários.

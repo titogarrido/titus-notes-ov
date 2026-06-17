@@ -405,7 +405,7 @@ fn run_transcription(
     update_progress(app, state, note_id, filename, "decoding", 0.0, 0.0);
 
     let mut last_emit = std::time::Instant::now();
-    let samples = decode_to_16k_mono(&audio_path, |decoded_secs| {
+    let mut samples = decode_to_16k_mono(&audio_path, |decoded_secs| {
         let now = std::time::Instant::now();
         if now.duration_since(last_emit).as_millis() >= 500 {
             update_progress(app, state, note_id, filename, "decoding", decoded_secs, 0.0);
@@ -416,6 +416,8 @@ fn run_transcription(
     if samples.is_empty() {
         return Err("Áudio vazio ou ilegível.".to_string());
     }
+    // Normaliza o loudness (AGC) antes da inferência para não perder trechos baixos.
+    agc_normalize(&mut samples);
     let total_secs = samples.len() as f32 / SAMPLE_RATE as f32;
     update_progress(app, state, note_id, filename, "transcribing", 0.0, total_secs);
 
@@ -449,7 +451,7 @@ fn run_channel_transcription(
     update_progress(app, state, note_id, filename, "decoding", 0.0, 0.0);
 
     let mut last_emit = std::time::Instant::now();
-    let mic_samples = decode_to_16k_mono(mic_path, |decoded_secs| {
+    let mut mic_samples = decode_to_16k_mono(mic_path, |decoded_secs| {
         let now = std::time::Instant::now();
         if now.duration_since(last_emit).as_millis() >= 500 {
             update_progress(app, state, note_id, filename, "decoding", decoded_secs, 0.0);
@@ -457,10 +459,15 @@ fn run_channel_transcription(
         }
         !state.cancel.load(Ordering::SeqCst)
     })?;
-    let sys_samples = decode_to_16k_mono(sys_path, |_| !state.cancel.load(Ordering::SeqCst))?;
+    let mut sys_samples = decode_to_16k_mono(sys_path, |_| !state.cancel.load(Ordering::SeqCst))?;
     if mic_samples.is_empty() && sys_samples.is_empty() {
         return Err("Áudio vazio ou ilegível.".to_string());
     }
+
+    // Normaliza o loudness de cada canal (AGC) antes da inferência — levanta
+    // vozes baixas (esp. participantes remotos) sem mexer no áudio salvo.
+    agc_normalize(&mut sys_samples);
+    agc_normalize(&mut mic_samples);
 
     let mic_secs = mic_samples.len() as f32 / SAMPLE_RATE as f32;
     let sys_secs = sys_samples.len() as f32 / SAMPLE_RATE as f32;
@@ -609,6 +616,163 @@ fn merge_labeled(
         .join("\n\n")
 }
 
+// ---------------------------------------------------------------------
+// Transcrição ao vivo (durante a gravação)
+// ---------------------------------------------------------------------
+//
+// O gravador encaminha as amostras mixadas (mono 16 kHz) para esta sessão, que
+// acumula janelas de ~LIVE_WINDOW_SECS (cortando em pausas), transcreve cada
+// janela e emite `transcription-live` para a UI ir preenchendo o transcript em
+// tempo real. O modelo é carregado uma vez e fica em RAM durante a reunião.
+
+/// Janela alvo (s) acumulada antes de transcrever ao vivo.
+const LIVE_WINDOW_SECS: f32 = 12.0;
+/// Margem (s) de busca por uma pausa perto do fim da janela.
+const LIVE_SPLIT_SEARCH_SECS: f32 = 1.5;
+
+enum LiveMsg {
+    Samples(Vec<f32>),
+    Finish,
+    Abort,
+}
+
+/// Handle de uma sessão ao vivo, segurado pelo gravador. O worker roda destacado
+/// (não bloqueamos a thread de gravação no encerramento — ela só sinaliza e o
+/// worker transcreve a última janela em background, emitindo `live-finished`).
+pub struct LiveHandle {
+    tx: std::sync::mpsc::Sender<LiveMsg>,
+}
+
+impl LiveHandle {
+    /// Encaminha um lote de amostras mono 16 kHz para transcrever ao vivo.
+    pub fn feed(&self, samples: Vec<f32>) {
+        let _ = self.tx.send(LiveMsg::Samples(samples));
+    }
+    /// Encerra normalmente: o worker transcreve o resto e finaliza sozinho.
+    pub fn finish(self) {
+        let _ = self.tx.send(LiveMsg::Finish);
+    }
+    /// Aborta (gravação cancelada): o worker descarta e finaliza sozinho.
+    pub fn abort(self) {
+        let _ = self.tx.send(LiveMsg::Abort);
+    }
+}
+
+/// Inicia uma sessão de transcrição ao vivo para `note_id`. Falha (sem efeito
+/// colateral) se o modelo não estiver baixado — o chamador cai para batch.
+pub fn spawn_live_session(app: &AppHandle, note_id: String) -> Result<LiveHandle, String> {
+    let status = {
+        let state = app.state::<TranscriberState>();
+        model_status_internal(app, &state)?
+    };
+    if !status.ready {
+        return Err("Modelo de transcrição não baixado.".to_string());
+    }
+    let model_dir = PathBuf::from(&status.model_dir);
+    let (tx, rx) = std::sync::mpsc::channel::<LiveMsg>();
+    let app2 = app.clone();
+    std::thread::Builder::new()
+        .name("live-transcriber".to_string())
+        .spawn(move || run_live_session(app2, model_dir, note_id, rx))
+        .map_err(|e| format!("Falha ao iniciar transcrição ao vivo: {}", e))?;
+    Ok(LiveHandle { tx })
+}
+
+fn run_live_session(
+    app: AppHandle,
+    model_dir: PathBuf,
+    note_id: String,
+    rx: std::sync::mpsc::Receiver<LiveMsg>,
+) {
+    let mut model = match ParakeetModel::load(&model_dir, &Quantization::Int8) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = app.emit(
+                "transcription-live-error",
+                serde_json::json!({
+                    "noteId": note_id,
+                    "message": format!("Falha ao carregar o modelo: {}", e),
+                }),
+            );
+            return;
+        }
+    };
+    let _ = app.emit(
+        "transcription-live-started",
+        serde_json::json!({ "noteId": note_id }),
+    );
+
+    let window = (LIVE_WINDOW_SECS * SAMPLE_RATE as f32) as usize;
+    let search = (LIVE_SPLIT_SEARCH_SECS * SAMPLE_RATE as f32) as usize;
+    let min_chunk = SAMPLE_RATE as usize; // 1 s
+
+    let mut buf: Vec<f32> = Vec::with_capacity(window * 2);
+    let mut emitted_samples: usize = 0; // p/ o timestamp do início de cada janela
+
+    loop {
+        match rx.recv() {
+            Ok(LiveMsg::Samples(s)) => {
+                buf.extend(s);
+                while buf.len() >= window {
+                    // Corta numa pausa perto do fim da janela (evita partir palavra).
+                    let target = window.saturating_sub(search / 2);
+                    let split = find_quiet_split(&buf, target, search).clamp(min_chunk, buf.len());
+                    let chunk: Vec<f32> = buf.drain(..split).collect();
+                    live_emit_chunk(&app, &mut model, &chunk, emitted_samples, &note_id, min_chunk);
+                    emitted_samples += split;
+                }
+            }
+            Ok(LiveMsg::Finish) => {
+                // Última janela parcial (ignora se for só silêncio).
+                if !buf.is_empty() && buf.iter().any(|v| v.abs() > 1e-3) {
+                    let chunk = std::mem::take(&mut buf);
+                    live_emit_chunk(&app, &mut model, &chunk, emitted_samples, &note_id, min_chunk);
+                }
+                break;
+            }
+            Ok(LiveMsg::Abort) | Err(_) => break,
+        }
+    }
+
+    // Em qualquer saída (fim normal, abort ou canal fechado) sinaliza o término
+    // para a UI limpar o indicador "ao vivo".
+    let _ = app.emit(
+        "transcription-live-finished",
+        serde_json::json!({ "noteId": note_id }),
+    );
+}
+
+/// Transcreve uma janela e emite `transcription-live` se houver texto.
+fn live_emit_chunk(
+    app: &AppHandle,
+    model: &mut ParakeetModel,
+    chunk: &[f32],
+    start_samples: usize,
+    note_id: &str,
+    min_chunk: usize,
+) {
+    // Cópia mutável: zero-pad fatias < 1 s e normaliza o loudness (AGC) antes da
+    // inferência — levanta trechos baixos (ex.: remoto falando no seu silêncio).
+    let mut input: Vec<f32> = chunk.to_vec();
+    if input.len() < min_chunk {
+        input.resize(min_chunk, 0.0);
+    }
+    agc_normalize(&mut input);
+    if let Ok(result) = model.transcribe_with(&input, &ParakeetParams::default()) {
+        let text = result.text.trim().to_string();
+        if !text.is_empty() {
+            let _ = app.emit(
+                "transcription-live",
+                serde_json::json!({
+                    "noteId": note_id,
+                    "text": text,
+                    "start": start_samples as f32 / SAMPLE_RATE as f32,
+                }),
+            );
+        }
+    }
+}
+
 fn update_progress(
     app: &AppHandle,
     state: &TranscriberState,
@@ -635,6 +799,58 @@ fn update_progress(
             "totalSecs": total_secs,
         }),
     );
+}
+
+/// Normalização de loudness por janela (AGC) aplicada ANTES da inferência — não
+/// toca no áudio salvo. Levanta trechos de fala baixos a um nível alvo para o
+/// modelo não perder vozes remotas mais baixas. É boost-only (nunca abaixa uma
+/// fala já boa), com noise gate (não amplifica silêncio/ruído) e ganho suavizado
+/// (ataque rápido ao chegar som alto, release lento — evita "pumping").
+///
+/// Constantes conservadoras e fáceis de calibrar.
+fn agc_normalize(samples: &mut [f32]) {
+    const FRAME: usize = 480; // 30 ms @ 16 kHz
+    const TARGET_RMS: f32 = 0.1; // ~ -20 dBFS
+    const NOISE_FLOOR_RMS: f32 = 0.005; // abaixo disso: silêncio/ruído → ganho 1.0
+    const MAX_GAIN: f32 = 10.0;
+    const ATTACK: f32 = 0.5; // ganho caindo (som alto): reage rápido
+    const RELEASE: f32 = 0.05; // ganho subindo (trecho baixo): sobe devagar
+
+    if samples.is_empty() {
+        return;
+    }
+
+    let mut gain = 1.0f32;
+    let mut i = 0;
+    while i < samples.len() {
+        let end = (i + FRAME).min(samples.len());
+        let span = end - i;
+        // RMS do frame (sobre as amostras ainda originais).
+        let rms = {
+            let frame = &samples[i..end];
+            (frame.iter().map(|s| s * s).sum::<f32>() / span as f32).sqrt()
+        };
+        let desired = if rms < NOISE_FLOOR_RMS {
+            1.0
+        } else {
+            (TARGET_RMS / rms).clamp(1.0, MAX_GAIN)
+        };
+        let coeff = if desired < gain { ATTACK } else { RELEASE };
+        let start_gain = gain;
+        let target_gain = start_gain + (desired - start_gain) * coeff;
+
+        // Interpola o ganho ao longo do frame (transição suave) e clampa o sinal.
+        for (k, s) in samples[i..end].iter_mut().enumerate() {
+            let g = if span > 1 {
+                start_gain + (target_gain - start_gain) * (k as f32 / (span - 1) as f32)
+            } else {
+                target_gain
+            };
+            *s = (*s * g).clamp(-1.0, 1.0);
+        }
+        gain = target_gain;
+        i = end;
+    }
 }
 
 /// Procura, em ± `search` amostras ao redor de `target`, o frame de 30 ms com

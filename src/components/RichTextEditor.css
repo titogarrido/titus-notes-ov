@@ -1192,3 +1192,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Indicador de transcrição ao vivo */
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #cf222e;
+  display: inline-block;
+  animation: livePulse 1.2s ease-in-out infinite;
+}
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}

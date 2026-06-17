@@ -56,6 +56,7 @@ export const SettingsView: React.FC = () => {
   const {
     db,
     updateSettings,
+    updateTranscriptionMode,
     addTemplate,
     updateTemplate,
     deleteTemplate,
@@ -1054,6 +1055,46 @@ export const SettingsView: React.FC = () => {
             <strong>NVIDIA Parakeet TDT 0.6b v3</strong> (multilíngue, inclui português). O botão
             de transcrever fica na aba <strong>Transcrição</strong> das notas com áudio anexado.
           </p>
+
+          {/* Modo de transcrição: lote (pós) x ao vivo */}
+          <div style={{ marginBottom: "16px" }}>
+            <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "6px" }}>
+              Quando transcrever
+            </div>
+            <div style={{ display: "inline-flex", border: "1px solid var(--border-color)", borderRadius: 8, overflow: "hidden" }}>
+              {([
+                { id: "batch", label: "Pós-processada (lote)", hint: "Transcreve depois, com canais separados (mais preciso)." },
+                { id: "realtime", label: "Ao vivo (tempo real)", hint: "Preenche o transcript durante a reunião." },
+              ] as const).map((opt) => {
+                const active = (db.transcriptionMode === "realtime" ? "realtime" : "batch") === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => void updateTranscriptionMode(opt.id)}
+                    title={opt.hint}
+                    style={{
+                      padding: "7px 14px",
+                      border: "none",
+                      borderRight: opt.id === "batch" ? "1px solid var(--border-color)" : "none",
+                      background: active ? "var(--color-text-main)" : "var(--bg-card)",
+                      color: active ? "#fff" : "var(--color-text-main)",
+                      fontSize: 12,
+                      fontWeight: 500,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p style={{ fontSize: "11px", color: "var(--color-text-muted)", margin: "6px 0 0 0" }}>
+              {db.transcriptionMode === "realtime"
+                ? "Ao vivo transcreve o áudio mixado em janelas durante a reunião — exige o modelo baixado (abaixo) e usa mais CPU/RAM. Menos preciso que o lote (que separa sua voz da dos outros); para a versão mais fiel, use o lote."
+                : "No lote, ao parar a gravação você transcreve pela aba Transcrição — com microfone e áudio do sistema separados e rótulo (Você)/(Outros)."}
+            </p>
+          </div>
 
           <div className="settings-row">
             <div className="settings-text-block">

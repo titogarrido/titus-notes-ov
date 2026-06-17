@@ -133,6 +133,8 @@ export interface DataRootInfo {
   isCustom: boolean;
 }
 
+export type TranscriptionMode = "batch" | "realtime";
+
 export type S3Schedule = "off" | "daily" | "weekly";
 export type HyprnoteSchedule = "off" | "30m" | "1h" | "2h" | "4h";
 export type AudioCleanupAge = "1m" | "2m" | "3m";
@@ -170,6 +172,8 @@ export interface Database {
   templates?: SummaryTemplate[];
   hyprnotePath?: string;
   profile?: UserProfile;
+  /** "batch" (padrão): transcreve após a gravação. "realtime": ao vivo durante a reunião. */
+  transcriptionMode?: TranscriptionMode;
   s3Schedule?: S3Schedule;
   s3LastBackupAt?: string;
   s3Retention?: number;

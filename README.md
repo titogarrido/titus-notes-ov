@@ -34,6 +34,9 @@ sem servidor.
   16 kHz / 32 kbps para ouvir, e em **canais separados** durante a gravação)
 - **Transcrição 100% local** com Parakeet v3 (`parakeet-tdt-0.6b-v3`, ONNX) — o modelo é
   baixado uma única vez sob demanda
+- **Modo de transcrição configurável** (Configurações → Transcrição local):
+  **lote** (padrão; pós-gravação, com canais separados e mais preciso) ou **ao vivo**
+  (preenche o transcript em tempo real durante a reunião, em janelas)
 - **Transcrição por canais com rótulo de locutor**: o seu microfone e o áudio do sistema
   são transcritos **separadamente** (cada um no nível nativo, sem o desbalanceamento da
   mistura) e mesclados por tempo, marcando **(Você)** e **(Outros)**. Isso garante que a

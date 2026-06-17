@@ -110,6 +110,7 @@ pub fn start_recording(
     auto_stop_secs: Option<u64>,
     system_audio: Option<bool>,
     stop_on_meeting_end: Option<bool>,
+    live: Option<bool>,
 ) -> Result<RecordingStatus, String> {
     let mut guard = state
         .0
@@ -131,6 +132,7 @@ pub fn start_recording(
         .map(Duration::from_secs);
     let want_system_audio = system_audio.unwrap_or(true);
     let stop_on_meeting_end = stop_on_meeting_end.unwrap_or(true);
+    let live = live.unwrap_or(false);
 
     // Handshake: a thread confirma que a captura abriu antes do comando retornar.
     let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<StartInfo, String>>(1);
@@ -153,6 +155,7 @@ pub fn start_recording(
             meeting_stop: thread_meeting_stop,
             auto_stop,
             want_system_audio,
+            live,
             ready_tx,
         });
         if let Err(e) = &result {
@@ -575,6 +578,7 @@ struct RecordingJob {
     meeting_stop: Arc<AtomicBool>,
     auto_stop: Option<Duration>,
     want_system_audio: bool,
+    live: bool,
     ready_tx: mpsc::SyncSender<Result<StartInfo, String>>,
 }
 
@@ -653,6 +657,14 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
     // "manual" = stop_recording assumiu o estado; nos demais a thread se remove.
     let mut finish_reason = "manual";
 
+    // Sessão de transcrição ao vivo (opcional): encaminha o mix conforme grava.
+    // Se o modelo não estiver baixado, cai silenciosamente para batch.
+    let mut live_handle: Option<crate::transcriber::LiveHandle> = if job.live {
+        crate::transcriber::spawn_live_session(&job.app, job.note_id.clone()).ok()
+    } else {
+        None
+    };
+
     // Processa um lote: mic é o clock mestre; o sistema entra do FIFO (zeros se
     // faltar). Grava os sidecars por canal (microfone pré-mix e sistema alinhado)
     // e o arquivo mixado para playback. Retorna o RMS do mix p/ detecção de silêncio.
@@ -661,7 +673,8 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
                               encoder: &mut mp3lame_encoder::Encoder,
                               writer: &mut std::io::BufWriter<fs::File>,
                               peak: &mut f32,
-                              total: &mut u64|
+                              total: &mut u64,
+                              live: &Option<crate::transcriber::LiveHandle>|
      -> Result<f32, String> {
         if mic_chunk.is_empty() {
             return Ok(0.0);
@@ -707,6 +720,10 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
         let rms = (sq_sum / n as f64).sqrt() as f32;
         *total += n as u64;
         encode_and_write(encoder, &pcm_i16, writer)?;
+        // Transcrição ao vivo: encaminha o mix (todos) antes de limpar o lote.
+        if let Some(h) = live.as_ref() {
+            h.feed(mic_chunk.clone());
+        }
         mic_chunk.clear();
         Ok(rms)
     };
@@ -724,6 +741,7 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
                         &mut writer,
                         &mut peak,
                         &mut total_samples,
+                        &live_handle,
                     )?;
                     if rms < SILENCE_RMS_THRESHOLD {
                         if silence_since.is_none() {
@@ -771,7 +789,10 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
     }
     if job.cancel.load(Ordering::Relaxed) {
         // Descarte: o comando cancel_recording apaga o arquivo principal; aqui
-        // soltamos e removemos os sidecars por canal.
+        // soltamos e removemos os sidecars por canal e abortamos o ao vivo.
+        if let Some(h) = live_handle.take() {
+            h.abort();
+        }
         drop(mic_writer.take());
         drop(mic_encoder.take());
         drop(sys_writer.take());
@@ -794,7 +815,13 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
         &mut writer,
         &mut peak,
         &mut total_samples,
+        &live_handle,
     )?;
+
+    // Encerra a transcrição ao vivo: transcreve o resto e aguarda o worker.
+    if let Some(h) = live_handle.take() {
+        h.finish();
+    }
 
     let mut tail: Vec<u8> = Vec::with_capacity(7200);
     let n = encoder

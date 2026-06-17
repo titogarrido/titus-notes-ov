@@ -138,6 +138,8 @@ interface AppContextType {
   deleteTask: (id: string) => Promise<void>;
 
   updateSettings: (s: OllamaSettings) => Promise<void>;
+  updateTranscriptionMode: (mode: string) => Promise<void>;
+  liveTranscribingNoteId: string | null;
   addTemplate: (t: Omit<SummaryTemplate, "id">) => Promise<string>;
   updateTemplate: (t: SummaryTemplate) => Promise<void>;
   deleteTemplate: (id: string) => Promise<void>;
@@ -175,6 +177,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [searchOpen, setSearchOpen] = useState<boolean>(false);
   const [pendingNoteTab, setPendingNoteTab] = useState<string | null>(null);
   const [pendingNoteQuery, setPendingNoteQuery] = useState<string | null>(null);
+  // Id da nota sendo transcrita ao vivo (null = nenhuma).
+  const [liveTranscribingNoteId, setLiveNoteId] = useState<string | null>(null);
   const [dataRoot, setDataRootState] = useState<DataRootInfo | null>(null);
 
   // Load database from Rust on mount
@@ -345,6 +349,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         autoStopSecs: loadAutoStopSecs(),
         systemAudio: true,
         stopOnMeetingEnd: true,
+        live: db.transcriptionMode === "realtime",
       });
     } catch (err) {
       console.error("Falha ao iniciar a gravação da reunião:", err);
@@ -434,6 +439,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (disposed) u();
       else unlisteners.push(u);
     });
+    return () => {
+      disposed = true;
+      unlisteners.forEach((u) => u());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // --- Transcrição ao vivo: o backend emite janelas conforme a reunião acontece.
+  // Acumulamos no transcript da nota em tempo real (modo "realtime").
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const track = (p: Promise<() => void>) =>
+      p.then((u) => {
+        if (disposed) u();
+        else unlisteners.push(u);
+      });
+
+    const fmtTs = (secs: number) => {
+      const t = Math.max(0, Math.floor(secs));
+      const h = Math.floor(t / 3600);
+      const m = Math.floor((t % 3600) / 60);
+      const s = t % 60;
+      const p = (n: number) => String(n).padStart(2, "0");
+      return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${m}:${p(s)}`;
+    };
+
+    track(
+      listen<{ noteId: string }>("transcription-live-started", (e) =>
+        setLiveNoteId(e.payload.noteId),
+      ),
+    );
+    track(
+      listen<{ noteId: string; text: string; start: number }>(
+        "transcription-live",
+        async (e) => {
+          const { noteId, text, start } = e.payload;
+          const line = `[${fmtTs(start)}] ${text}`;
+          await saveDatabase((prev) => ({
+            ...prev,
+            notes: prev.notes.map((n) =>
+              n.id === noteId
+                ? {
+                    ...n,
+                    transcript: n.transcript ? `${n.transcript}\n\n${line}` : line,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : n,
+            ),
+          }));
+        },
+      ),
+    );
+    track(
+      listen<{ noteId: string }>("transcription-live-finished", () =>
+        setLiveNoteId(null),
+      ),
+    );
+    track(
+      listen<{ noteId: string; message: string }>("transcription-live-error", (e) => {
+        console.error("Transcrição ao vivo falhou:", e.payload.message);
+        setLiveNoteId(null);
+      }),
+    );
+
     return () => {
       disposed = true;
       unlisteners.forEach((u) => u());
@@ -631,6 +701,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // --- SETTINGS / TEMPLATES ---
   const updateSettings = async (s: OllamaSettings) => {
     await saveDatabase((prev) => ({ ...prev, settings: s }));
+  };
+
+  const updateTranscriptionMode = async (mode: string) => {
+    await saveDatabase((prev) => ({
+      ...prev,
+      transcriptionMode: mode as Database["transcriptionMode"],
+    }));
   };
 
   const addTemplate = async (data: Omit<SummaryTemplate, "id">): Promise<string> => {
@@ -940,6 +1017,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateTask,
         deleteTask,
         updateSettings,
+        updateTranscriptionMode,
+        liveTranscribingNoteId,
         addTemplate,
         updateTemplate,
         deleteTemplate,
