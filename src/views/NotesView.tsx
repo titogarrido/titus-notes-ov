@@ -14,6 +14,7 @@ import {
   Mic,
   Sparkles,
   Volume2,
+  Check,
 } from "lucide-react";
 
 import { RichTextEditor } from "../components/RichTextEditor";
@@ -115,7 +116,7 @@ export const NotesView: React.FC = () => {
     selectedEntityId,
     setSelectedEntityId,
     addNote,
-    updateNote,
+    patchNote,
     deleteNote,
     addPerson,
     pendingNoteTab,
@@ -144,6 +145,7 @@ export const NotesView: React.FC = () => {
   const [filterProjectId, setFilterProjectId] = useState<string>("__all");
   const [filterTags, setFilterTags] = useState<string[]>([]); // normalizados (interseção)
   const [justCreatedId, setJustCreatedId] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState(false);
 
   const today = useMemo(() => new Date(), []);
 
@@ -220,8 +222,8 @@ export const NotesView: React.FC = () => {
   // quando a janela perde o foco.
   const dbRef = useRef(db);
   dbRef.current = db;
-  const updateNoteRef = useRef(updateNote);
-  updateNoteRef.current = updateNote;
+  const patchNoteRef = useRef(patchNote);
+  patchNoteRef.current = patchNote;
   const pendingFieldsRef = useRef<{ noteId: string; fields: Partial<Note> } | null>(null);
   const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -233,9 +235,9 @@ export const NotesView: React.FC = () => {
     const pending = pendingFieldsRef.current;
     pendingFieldsRef.current = null;
     if (!pending) return;
-    // Busca a nota fresca: title/people/summaries podem ter mudado no meio
-    const note = dbRef.current.notes.find((n) => n.id === pending.noteId);
-    if (note) await updateNoteRef.current({ ...note, ...pending.fields });
+    // Aplica só os campos pendentes sobre o estado fresco (evita sobrescrever
+    // mudanças concorrentes como uma transcrição recém-salva).
+    await patchNoteRef.current(pending.noteId, pending.fields);
   };
   const flushRef = useRef(flushPendingFields);
   flushRef.current = flushPendingFields;
@@ -274,6 +276,21 @@ export const NotesView: React.FC = () => {
     window.addEventListener("blur", onBlur);
     return () => window.removeEventListener("blur", onBlur);
   }, []);
+
+  // ⌘S / Ctrl+S — salva a nota aberta on demand (flush imediato + confirmação).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+        if (!selectedEntityId) return;
+        e.preventDefault();
+        void flushRef.current();
+        setSavedNotice(true);
+        window.setTimeout(() => setSavedNotice(false), 1500);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedEntityId]);
 
   const handleContentChange = (newContent: string) => {
     if (!selectedEntityId) return;
@@ -766,6 +783,22 @@ export const NotesView: React.FC = () => {
                   placeholder="Título da nota..."
                 />
               </div>
+              {savedNotice && (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "#1f8e3d",
+                    flexShrink: 0,
+                    marginRight: 4,
+                  }}
+                >
+                  <Check size={14} /> Salvo
+                </span>
+              )}
               <button
                 className="btn-icon"
                 style={{ color: "#cf222e", flexShrink: 0 }}
@@ -1124,24 +1157,21 @@ export const NotesView: React.FC = () => {
                   }
                 }
                 onAddSummary={async (summary) => {
-                  await updateNote({
-                    ...selectedNote,
-                    summaries: [summary, ...(selectedNote.summaries || [])],
-                  });
+                  await patchNote(selectedNote.id, (old) => ({
+                    summaries: [summary, ...(old.summaries || [])],
+                  }));
                 }}
                 onUpdateSummary={async (summary) => {
-                  await updateNote({
-                    ...selectedNote,
-                    summaries: (selectedNote.summaries || []).map((s) =>
+                  await patchNote(selectedNote.id, (old) => ({
+                    summaries: (old.summaries || []).map((s) =>
                       s.id === summary.id ? summary : s,
                     ),
-                  });
+                  }));
                 }}
                 onDeleteSummary={async (id) => {
-                  await updateNote({
-                    ...selectedNote,
-                    summaries: (selectedNote.summaries || []).filter((s) => s.id !== id),
-                  });
+                  await patchNote(selectedNote.id, (old) => ({
+                    summaries: (old.summaries || []).filter((s) => s.id !== id),
+                  }));
                 }}
                 transcript={selectedNote.transcript || ""}
                 onTranscriptChange={(t) => {

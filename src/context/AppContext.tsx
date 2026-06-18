@@ -131,6 +131,10 @@ interface AppContextType {
   
   addNote: (note: Omit<Note, "id">) => Promise<string>;
   updateNote: (note: Note) => Promise<void>;
+  patchNote: (
+    id: string,
+    fields: Partial<Note> | ((old: Note) => Partial<Note>),
+  ) => Promise<void>;
   deleteNote: (id: string) => Promise<void>;
   
   addTask: (task: Omit<Task, "id">) => Promise<void>;
@@ -651,6 +655,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Aplica APENAS os campos informados sobre a versão MAIS FRESCA da nota (dentro
+  // do mutator), evitando o clobber de escritas concorrentes — o flush com debounce
+  // da NotesView e os eventos (transcrição/gravação) salvam em paralelo, e um
+  // snapshot defasado sobrescreveria mudanças recentes. `fields` pode ser uma
+  // função (old) => Partial<Note> para derivar do estado atual (ex.: sumários).
+  const patchNote = async (
+    id: string,
+    fields: Partial<Note> | ((old: Note) => Partial<Note>),
+  ) => {
+    let oldNote: Note | undefined;
+    let merged: Note | undefined;
+    let nextNotesSnapshot: Note[] = [];
+    await saveDatabase((prev) => {
+      oldNote = prev.notes.find((n) => n.id === id);
+      if (!oldNote) return prev;
+      const patch = typeof fields === "function" ? fields(oldNote) : fields;
+      merged = { ...oldNote, ...patch, updatedAt: new Date().toISOString() };
+      const nextNotes = prev.notes.map((n) => (n.id === id ? merged! : n));
+      nextNotesSnapshot = nextNotes;
+      const affectedProjects = [oldNote.projectId, merged.projectId];
+      return {
+        ...prev,
+        notes: nextNotes,
+        projects: recomputeProjectPeople(prev.projects, nextNotes, affectedProjects),
+      };
+    });
+
+    // Limpeza de imagens órfãs só quando o conteúdo mudou.
+    if (oldNote && merged && merged.content !== oldNote.content) {
+      const oldImages = new Set(extractImageFilenames(oldNote.content));
+      const newImages = new Set(extractImageFilenames(merged.content));
+      const removed = [...oldImages].filter((f) => !newImages.has(f));
+      if (removed.length > 0) {
+        const referenced = collectReferencedImages(nextNotesSnapshot, id);
+        const toDelete = removed.filter((f) => !referenced.has(f));
+        await deleteUnreferencedImages(toDelete);
+      }
+    }
+  };
+
   const deleteNote = async (id: string) => {
     let note: Note | undefined;
     let nextNotesSnapshot: Note[] = [];
@@ -1012,6 +1056,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteProject,
         addNote,
         updateNote,
+        patchNote,
         deleteNote,
         addTask,
         updateTask,
