@@ -19,6 +19,9 @@ import {
 import { RichTextEditor } from "../components/RichTextEditor";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { NoteChat } from "../components/NoteChat";
+import { TagInput } from "../components/TagInput";
+import { TagChips } from "../components/TagChips";
+import { allTags, normalizeTag } from "../lib/tags";
 
 // ---------- helpers ----------
 
@@ -139,6 +142,7 @@ export const NotesView: React.FC = () => {
   // List filters
   const [listSearch, setListSearch] = useState("");
   const [filterProjectId, setFilterProjectId] = useState<string>("__all");
+  const [filterTags, setFilterTags] = useState<string[]>([]); // normalizados (interseção)
   const [justCreatedId, setJustCreatedId] = useState<string | null>(null);
 
   const today = useMemo(() => new Date(), []);
@@ -356,16 +360,21 @@ export const NotesView: React.FC = () => {
       .filter((n) => {
         if (filterProjectId === "__none" && n.projectId) return false;
         if (filterProjectId !== "__all" && filterProjectId !== "__none" && n.projectId !== filterProjectId) return false;
+        if (filterTags.length > 0) {
+          const noteTags = (n.tags || []).map(normalizeTag);
+          if (!filterTags.every((ft) => noteTags.includes(ft))) return false;
+        }
         if (!q) return true;
         const inTitle = (n.title || "").toLowerCase().includes(q);
         const inContent = getContentPreview(n.content).toLowerCase().includes(q);
         const inPeople = n.peopleIds.some((pid) =>
           (db.people.find((p) => p.id === pid)?.name || "").toLowerCase().includes(q),
         );
-        return inTitle || inContent || inPeople;
+        const inTags = (n.tags || []).some((t) => t.toLowerCase().includes(q));
+        return inTitle || inContent || inPeople || inTags;
       })
       .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-  }, [db.notes, db.people, listSearch, filterProjectId]);
+  }, [db.notes, db.people, listSearch, filterProjectId, filterTags]);
 
   const groupedNotes = useMemo(() => {
     const groups = new Map<string, typeof filteredNotes>();
@@ -382,7 +391,8 @@ export const NotesView: React.FC = () => {
   }, [filteredNotes, today]);
 
   const totalNotes = db.notes.length;
-  const hasActiveFilters = listSearch.trim() !== "" || filterProjectId !== "__all";
+  const hasActiveFilters =
+    listSearch.trim() !== "" || filterProjectId !== "__all" || filterTags.length > 0;
 
   // ---------- render ----------
 
@@ -513,11 +523,28 @@ export const NotesView: React.FC = () => {
                 )}
               </div>
 
+              {allTags(db).length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", maxHeight: 64, overflow: "auto" }}>
+                  <span style={{ fontSize: 11, color: "var(--color-text-muted)", marginRight: 2 }}>Tags:</span>
+                  <TagChips
+                    tags={allTags(db)}
+                    activeTags={filterTags}
+                    onToggle={(tag) => {
+                      const n = normalizeTag(tag);
+                      setFilterTags((prev) =>
+                        prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n],
+                      );
+                    }}
+                  />
+                </div>
+              )}
+
               {hasActiveFilters && (
                 <button
                   onClick={() => {
                     setListSearch("");
                     setFilterProjectId("__all");
+                    setFilterTags([]);
                   }}
                   className="btn-secondary"
                   style={{ fontSize: 12, padding: "4px 10px" }}
@@ -658,6 +685,11 @@ export const NotesView: React.FC = () => {
                                 </span>
                               )}
                             </div>
+                            {note.tags && note.tags.length > 0 && (
+                              <div style={{ marginTop: 6 }}>
+                                <TagChips tags={note.tags} />
+                              </div>
+                            )}
                             {note.content && (
                               <p
                                 style={{
@@ -1043,6 +1075,27 @@ export const NotesView: React.FC = () => {
                     })()}
                   </div>
                 </div>
+              </div>
+            </div>
+
+            {/* Tags */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 24px",
+                backgroundColor: "#f8f9fa",
+                borderBottom: "1px solid var(--color-border)",
+              }}
+            >
+              <div style={{ width: 320, maxWidth: "100%" }}>
+                <TagInput
+                  tags={selectedNote.tags || []}
+                  suggestions={allTags(db)}
+                  onChange={(tags) => commitNoteFields({ tags })}
+                  placeholder="Adicionar tags…"
+                />
               </div>
             </div>
 

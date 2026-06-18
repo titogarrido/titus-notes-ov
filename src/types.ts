@@ -53,6 +53,8 @@ export interface Project {
   status?: ProjectStatus | string;
   updatedAt?: string;
   aiSummary?: AIProjectSummary;
+  /** Tags livres para organização transversal. */
+  tags?: string[];
 }
 
 export interface AIProjectSummary {
@@ -94,6 +96,8 @@ export interface Note {
   audioFile?: string;
   /** Nome do arquivo de áudio só do microfone (sidecar `*.mic.mp3`), quando houve áudio do sistema */
   micFile?: string;
+  /** Tags livres para organização transversal. */
+  tags?: string[];
 }
 
 export interface OllamaSettings {
@@ -116,6 +120,8 @@ export interface Task {
   dueDate: string;
   projectId: string | null;
   personId: string | null;
+  /** Tags livres para organização transversal. */
+  tags?: string[];
 }
 
 export interface UserProfile {

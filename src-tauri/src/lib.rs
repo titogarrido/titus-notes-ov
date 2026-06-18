@@ -69,6 +69,8 @@ pub struct Project {
     pub updated_at: String,
     #[serde(default)]
     pub ai_summary: Option<AIProjectSummary>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -123,6 +125,8 @@ pub struct Note {
     /// Nome do sidecar mono do microfone (`*.mic.mp3`), enquanto existir em disco.
     #[serde(default)]
     pub mic_file: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -134,6 +138,8 @@ pub struct Task {
     pub due_date: String,
     pub project_id: Option<String>,
     pub person_id: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

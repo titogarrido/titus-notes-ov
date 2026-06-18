@@ -3,6 +3,8 @@ import { useApp } from "../context/AppContext";
 import { CheckSquare, Plus, Trash2, Check, Search, X, AlertTriangle } from "lucide-react";
 import { Task } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { TagInput } from "../components/TagInput";
+import { allTags } from "../lib/tags";
 
 type EditField = "title" | "date" | "person" | "project";
 interface InlineEdit {
@@ -446,6 +448,15 @@ export const TasksView: React.FC = () => {
                       {formatDateBR(task.dueDate)}
                     </span>
                   )}
+
+                  <div style={{ minWidth: 150, maxWidth: 240 }}>
+                    <TagInput
+                      tags={task.tags || []}
+                      suggestions={allTags(db)}
+                      onChange={(tags) => void updateTask({ ...task, tags })}
+                      placeholder="+ tag"
+                    />
+                  </div>
 
                   <button
                     type="button"

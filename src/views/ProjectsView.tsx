@@ -23,7 +23,10 @@ import { RichTextEditor } from "../components/RichTextEditor";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ProjectChat } from "../components/ProjectChat";
+import { TagInput } from "../components/TagInput";
+import { TagChips } from "../components/TagChips";
 import { generateSummaryWithOllama, noteToPlainText } from "../lib/ollama";
+import { allTags } from "../lib/tags";
 import type { ProjectStatus, AIProjectSummary } from "../types";
 
 // --------- helpers ---------
@@ -137,6 +140,7 @@ export const ProjectsView: React.FC = () => {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [peopleIds, setPeopleIds] = useState<string[]>([]);
+  const [tags, setTags] = useState<string[]>([]);
   const [createStatus, setCreateStatus] = useState<ProjectStatus>("em-andamento");
   const [peopleSearch, setPeopleSearch] = useState("");
   const [creatingPerson, setCreatingPerson] = useState(false);
@@ -156,6 +160,7 @@ export const ProjectsView: React.FC = () => {
     setName("");
     setDescription("");
     setPeopleIds([]);
+    setTags([]);
     setCreateStatus("em-andamento");
     setPeopleSearch("");
     setIsCreating(true);
@@ -180,6 +185,7 @@ export const ProjectsView: React.FC = () => {
         description,
         peopleIds,
         status: createStatus,
+        tags,
       });
       setIsCreating(false);
       // Abre o projeto recém-criado em vez de voltar para a lista.
@@ -992,6 +998,11 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
               </div>
             </div>
 
+            <div className="form-group" style={{ flexShrink: 0 }}>
+              <label className="form-label">Tags</label>
+              <TagInput tags={tags} suggestions={allTags(db)} onChange={setTags} />
+            </div>
+
             <div className="form-actions" style={{ marginTop: 24, flexShrink: 0 }}>
               <button type="button" className="btn-secondary" onClick={() => setIsCreating(false)}>
                 Cancelar
@@ -1140,6 +1151,15 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
       <div className="proj-content">
         {tab === "overview" && (
           <div className="proj-overview">
+            {/* Tags */}
+            <div style={{ marginBottom: 16, maxWidth: 420 }}>
+              <TagInput
+                tags={selectedProject.tags || []}
+                suggestions={allTags(db)}
+                onChange={(tags) => void updateProject({ ...selectedProject, tags })}
+                placeholder="Adicionar tags ao projeto…"
+              />
+            </div>
             {/* AI Summary card */}
             {(selectedProject.aiSummary || projectSummaryError || generatingProjectSummary) && (
               <div className="proj-ai-summary-card">
@@ -1521,6 +1541,7 @@ type ProjectLike = {
   peopleIds: string[];
   status?: string;
   updatedAt?: string;
+  tags?: string[];
 };
 
 const initialsOf = (name: string) =>
@@ -1596,6 +1617,11 @@ const ProjectsTable: React.FC<{
         <div className="proj-row-name">
           <div className="proj-row-title">{project.name}</div>
           <div className="proj-row-snippet">{snippet || "Sem descrição"}</div>
+          {project.tags && project.tags.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              <TagChips tags={project.tags} />
+            </div>
+          )}
         </div>
         <div className="proj-row-col">
           <StatusBadge status={project.status || ""} />
@@ -1713,6 +1739,11 @@ const ProjectsGrid: React.FC<{
             <p className="project-card-desc">
               {extractNoteSnippet(project.description, 120) || "Sem descrição..."}
             </p>
+            {project.tags && project.tags.length > 0 && (
+              <div style={{ margin: "6px 0" }}>
+                <TagChips tags={project.tags} />
+              </div>
+            )}
             <div className="project-card-meta">
               <span>
                 {notesCount} notas • {tasksCount} pendentes

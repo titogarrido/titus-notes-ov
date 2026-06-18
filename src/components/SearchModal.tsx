@@ -46,6 +46,8 @@ interface NoteMatch {
 
 const matchNote = (n: Note, q: string): NoteMatch | null => {
   if (n.title.toLowerCase().includes(q)) return { note: n };
+  const tagHit = (n.tags || []).find((t) => t.toLowerCase().includes(q));
+  if (tagHit) return { note: n, label: "Tag", snippet: tagHit, tab: "content" };
   const content = noteText(n.content);
   if (content.toLowerCase().includes(q)) {
     return { note: n, label: "Conteúdo", snippet: buildSnippet(content, q), tab: "content" };
@@ -159,7 +161,8 @@ export const SearchModal: React.FC = () => {
     ? db.projects.filter(
         (p) =>
           p.name.toLowerCase().includes(cleanQuery) ||
-          p.description.toLowerCase().includes(cleanQuery)
+          p.description.toLowerCase().includes(cleanQuery) ||
+          (p.tags || []).some((t) => t.toLowerCase().includes(cleanQuery))
       )
     : [];
 
@@ -170,7 +173,11 @@ export const SearchModal: React.FC = () => {
     : [];
 
   const filteredTasks = cleanQuery
-    ? db.tasks.filter((t) => t.title.toLowerCase().includes(cleanQuery))
+    ? db.tasks.filter(
+        (t) =>
+          t.title.toLowerCase().includes(cleanQuery) ||
+          (t.tags || []).some((tg) => tg.toLowerCase().includes(cleanQuery))
+      )
     : [];
 
   const hasResults =

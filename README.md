@@ -69,6 +69,8 @@ sem servidor.
 - **Calendário** integrado a notas e tarefas
 - **Busca global** (`⌘K`) em notas (incluindo **corpo de transcrições e resumos**),
   pessoas, projetos e tarefas — com trecho de contexto e termo destacado
+- **Tags** em notas, projetos e tarefas — eixo de organização transversal, com
+  autocomplete, chips coloridos, busca por tag e filtro por tag na lista de notas
 
 ### 🔄 Dados, backup e atualizações
 - Banco de dados local em JSON (pasta configurável)
@@ -165,7 +167,7 @@ seguintes chegam automaticamente pelo updater.
 
 - [ ] Exportação de notas (PDF / Markdown)
 - [ ] Tema escuro
-- [ ] Tags e categorias
+- [x] Tags e categorias
 - [ ] Notarização Apple (remover o aviso do Gatekeeper)
 
 ## 📝 Licença
