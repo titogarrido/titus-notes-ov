@@ -2,7 +2,8 @@ import React, { useRef, useState, useMemo, useCallback, useEffect } from "react"
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./RichTextEditor.css";
-import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2, Captions, Download, Loader2, X, Check, ListChecks } from "lucide-react";
+import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2, Captions, Download, Loader2, X, Check, ListChecks, Upload } from "lucide-react";
+import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { Summary, SummaryTemplate, OllamaSettings } from "../types";
 import { SummariesPanel } from "./SummariesPanel";
 import { ActionItemsPanel } from "./ActionItemsPanel";
@@ -75,6 +76,8 @@ interface RichTextEditorProps {
   onTranscriptChange?: (t: string) => void;
   /** Arquivo de áudio em files/audio/ — quando presente, mostra um mini player na aba Transcrição */
   audioFile?: string;
+  /** Anexa um áudio gravado externamente (ex.: Gravador do iPhone) à nota. */
+  onAudioImported?: (filename: string) => void | Promise<void>;
   /** Aba inicial ao montar (ex.: abrir direto na transcrição vinda da busca). */
   initialTab?: "content" | "transcript" | "summaries" | "actions";
   /** Termo buscado — rola/realça até a ocorrência na aba de destino. */
@@ -457,6 +460,99 @@ const TranscribeControl: React.FC<{
       </div>
       {error && (
         <span style={{ fontSize: "12px", color: "#cf222e" }}>Falha na transcrição: {error}</span>
+      )}
+    </div>
+  );
+};
+
+// ----- Importar áudio externo (ex.: Gravador do iPhone) -----
+//
+// Copia um arquivo de áudio escolhido pelo usuário para files/audio/ via
+// `import_audio_file` e o anexa à nota. Depois o fluxo normal de transcrição
+// (botão "Transcrever áudio") cuida do resto. O backend decodifica mp3, m4a/aac
+// (Voice Memos), wav e aiff.
+const IMPORT_AUDIO_EXTS = ["mp3", "m4a", "mp4", "aac", "wav", "aiff", "aif"];
+
+const ImportAudioControl: React.FC<{
+  hasAudio: boolean;
+  onImported: (filename: string) => void | Promise<void>;
+}> = ({ hasAudio, onImported }) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmReplace, setConfirmReplace] = useState(false);
+
+  const pickAndImport = async () => {
+    setError(null);
+    setConfirmReplace(false);
+    try {
+      const selected = await dialogOpen({
+        multiple: false,
+        directory: false,
+        title: "Selecionar áudio da reunião",
+        filters: [{ name: "Áudio", extensions: IMPORT_AUDIO_EXTS }],
+      });
+      if (!selected || typeof selected !== "string") return;
+      setBusy(true);
+      const dot = selected.lastIndexOf(".");
+      const ext =
+        dot >= 0 ? selected.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+      const dest = `import-${Date.now()}.${ext || "audio"}`;
+      const saved = await invoke<string>("import_audio_file", {
+        sourcePath: selected,
+        destFilename: dest,
+      });
+      await onImported(saved);
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "6px",
+        padding: "8px 12px",
+        marginBottom: "10px",
+        border: "1px solid var(--color-border, #e0e0e0)",
+        background: "#f8fafc",
+        borderRadius: "8px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+        <Upload size={16} style={{ color: "var(--color-text-muted)", flexShrink: 0 }} />
+        <span style={{ fontSize: "12px", color: "var(--color-text-muted)", flex: 1 }}>
+          Importe um áudio gravado fora do app (ex.: Gravador do iPhone) para transcrever.
+        </span>
+        {confirmReplace ? (
+          <button
+            type="button"
+            className="recorder-btn recorder-btn-discard"
+            onClick={pickAndImport}
+            disabled={busy}
+          >
+            Substituir áudio atual?
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="recorder-btn"
+            disabled={busy}
+            onClick={() => {
+              if (hasAudio) setConfirmReplace(true);
+              else pickAndImport();
+            }}
+            style={{ whiteSpace: "nowrap" }}
+          >
+            {busy ? <Loader2 size={12} className="spin" /> : <Upload size={12} />} Importar áudio
+          </button>
+        )}
+      </div>
+      {error && (
+        <span style={{ fontSize: "12px", color: "#cf222e" }}>Falha ao importar: {error}</span>
       )}
     </div>
   );
@@ -1064,6 +1160,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   transcript,
   onTranscriptChange,
   audioFile,
+  onAudioImported,
   noteId = "",
   initialTab,
   initialQuery,
@@ -1502,6 +1599,9 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             </div>
           </div>
           {noteId && <MeetingRecorder noteId={noteId} />}
+          {noteId && onAudioImported && (
+            <ImportAudioControl hasAudio={!!audioFile} onImported={onAudioImported} />
+          )}
           {audioFile && <TranscriptAudioPlayer filename={audioFile} />}
           {noteId && audioFile && (
             <TranscribeControl

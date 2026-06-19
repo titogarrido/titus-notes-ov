@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useApp } from "../context/AppContext";
 import { Note } from "../types";
 import {
@@ -1178,6 +1179,34 @@ export const NotesView: React.FC = () => {
                   queueNoteFields(selectedNote.id, { transcript: t });
                 }}
                 audioFile={selectedNote.audioFile || ""}
+                onAudioImported={async (filename) => {
+                  // Áudio importado substitui qualquer gravação anterior: zera os
+                  // sidecars por canal (mic) e a transcrição própria, que não
+                  // correspondem mais ao novo arquivo.
+                  const old = selectedNote.audioFile || "";
+                  const oldMic = selectedNote.micFile || "";
+                  await patchNote(selectedNote.id, {
+                    audioFile: filename,
+                    micFile: "",
+                    selfTranscript: "",
+                  });
+                  // Remove o áudio antigo se nenhuma outra nota o usa.
+                  const stale = [old, oldMic].filter(
+                    (f) =>
+                      f &&
+                      f !== filename &&
+                      !db.notes.some(
+                        (n) => n.id !== selectedNote.id && (n.audioFile === f || n.micFile === f),
+                      ),
+                  );
+                  if (stale.length > 0) {
+                    try {
+                      await invoke("delete_audios", { filenames: stale });
+                    } catch (err) {
+                      console.error("Erro ao remover áudio antigo:", err);
+                    }
+                  }
+                }}
               />
             </div>
 

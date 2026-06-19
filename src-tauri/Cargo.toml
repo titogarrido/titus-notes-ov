@@ -35,7 +35,9 @@ cpal = "0.15"
 mp3lame-encoder = "0.2"
 screencapturekit = { version = "7", features = ["macos_13_0"] }
 transcribe-rs = { version = "0.3.11", features = ["onnx"] }
-symphonia = { version = "0.5", default-features = false, features = ["mp3"] }
+# mp3 = gravações do app; isomp4/aac/alac = .m4a do Gravador do iPhone (Voice
+# Memos exporta AAC em container MP4); wav/pcm = áudios importados sem compressão.
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "isomp4", "aac", "alac", "wav", "pcm"] }
 
 # A decodificação de MP3 em build de dev (sem otimização) levava ~40 s para
 # uma reunião de 30 min — com opt-level 3 nos crates do symphonia cai para
@@ -47,5 +49,15 @@ opt-level = 3
 [profile.dev.package.symphonia-bundle-mp3]
 opt-level = 3
 [profile.dev.package.symphonia-metadata]
+opt-level = 3
+[profile.dev.package.symphonia-codec-aac]
+opt-level = 3
+[profile.dev.package.symphonia-codec-alac]
+opt-level = 3
+[profile.dev.package.symphonia-codec-pcm]
+opt-level = 3
+[profile.dev.package.symphonia-format-isomp4]
+opt-level = 3
+[profile.dev.package.symphonia-format-riff]
 opt-level = 3
 
