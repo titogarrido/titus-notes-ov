@@ -211,6 +211,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // primeira checagem após o horário, uma vez por dia (daily) ou por semana
   // (weekly). Desligado quando s3Schedule === "off" ou sem credenciais.
   const s3RunningRef = useRef(false);
+  const s3LastBackupAtRef = useRef(db.s3LastBackupAt);
+  useEffect(() => {
+    s3LastBackupAtRef.current = db.s3LastBackupAt;
+  }, [db.s3LastBackupAt]);
+
   useEffect(() => {
     if (db.s3Schedule !== "daily" && db.s3Schedule !== "weekly") return;
     const weekly = db.s3Schedule === "weekly";
@@ -218,7 +223,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const tryRun = async () => {
       if (s3RunningRef.current) return;
       const now = Date.now();
-      const last = db.s3LastBackupAt ? Date.parse(db.s3LastBackupAt) : 0;
+      const last = s3LastBackupAtRef.current ? Date.parse(s3LastBackupAtRef.current) : 0;
 
       // Última ocorrência do horário escolhido em ou antes de agora.
       const [hh, mm] = (db.s3BackupTime || "03:00").split(":").map((n) => parseInt(n, 10));
@@ -252,7 +257,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const t = setInterval(tryRun, 5 * 60 * 1000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db.s3Schedule, db.s3LastBackupAt, db.s3BackupTime]);
+  }, [db.s3Schedule, db.s3BackupTime, db.s3Retention]);
 
   const refreshDataRoot = async () => {
     try {
