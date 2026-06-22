@@ -203,6 +203,9 @@ pub struct Database {
     pub s3_last_backup_at: String,
     #[serde(default)]
     pub s3_retention: u32,
+    /// Horário do dia (HH:MM) do backup automático; vazio = padrão "03:00" no front.
+    #[serde(default)]
+    pub s3_backup_time: String,
     #[serde(default)]
     pub hyprnote_schedule: String,
     #[serde(default)]
@@ -320,6 +323,7 @@ fn get_initial_database() -> Database {
         s3_schedule: String::new(),
         s3_last_backup_at: String::new(),
         s3_retention: 0,
+        s3_backup_time: String::new(),
         hyprnote_schedule: String::new(),
         hyprnote_last_import_at: String::new(),
         audio_cleanup_age: String::new(),

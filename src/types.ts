@@ -183,6 +183,8 @@ export interface Database {
   s3Schedule?: S3Schedule;
   s3LastBackupAt?: string;
   s3Retention?: number;
+  /** Horário do dia (HH:MM, 24h) em que o backup automático deve rodar. Padrão "03:00". */
+  s3BackupTime?: string;
   hyprnoteSchedule?: HyprnoteSchedule;
   hyprnoteLastImportAt?: string;
   audioCleanupAge?: AudioCleanupAge;

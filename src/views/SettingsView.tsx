@@ -65,6 +65,7 @@ export const SettingsView: React.FC = () => {
     updateProfile,
     updateS3Schedule,
     updateS3Retention,
+    updateS3BackupTime,
     updateHyprnoteSchedule,
     runHyprnoteImport,
     updateAudioCleanup,
@@ -496,10 +497,15 @@ export const SettingsView: React.FC = () => {
   const [restoreS3ConfirmOpen, setRestoreS3ConfirmOpen] = useState(false);
   const [schedule, setSchedule] = useState<S3Schedule>(db.s3Schedule || "off");
   const [retention, setRetention] = useState<number>(db.s3Retention ?? 3);
+  const [backupTime, setBackupTime] = useState<string>(db.s3BackupTime || "03:00");
 
   useEffect(() => {
     setSchedule(db.s3Schedule || "off");
   }, [db.s3Schedule]);
+
+  useEffect(() => {
+    setBackupTime(db.s3BackupTime || "03:00");
+  }, [db.s3BackupTime]);
 
   useEffect(() => {
     setRetention(db.s3Retention ?? 3);
@@ -690,6 +696,11 @@ export const SettingsView: React.FC = () => {
   const handleScheduleChange = async (v: S3Schedule) => {
     setSchedule(v);
     await updateS3Schedule(v);
+  };
+
+  const handleBackupTimeChange = async (v: string) => {
+    setBackupTime(v);
+    if (v) await updateS3BackupTime(v);
   };
 
   // ---- Updater ----
@@ -1913,6 +1924,24 @@ export const SettingsView: React.FC = () => {
               <option value="weekly">Semanal</option>
             </select>
           </div>
+
+          {schedule !== "off" && (
+            <div className="settings-row">
+              <div className="settings-text-block">
+                <span className="settings-title">Horário do backup</span>
+                <span className="settings-desc">
+                  Roda na primeira vez que o app estiver aberto a partir deste horário.
+                </span>
+              </div>
+              <input
+                type="time"
+                className="form-input"
+                value={backupTime}
+                onChange={(e) => handleBackupTimeChange(e.target.value)}
+                style={{ width: 120 }}
+              />
+            </div>
+          )}
         </div>
 
         {/* Updates */}

@@ -154,6 +154,7 @@ interface AppContextType {
   updateProfile: (profile: UserProfile) => Promise<void>;
   updateS3Schedule: (schedule: string, lastBackupAt?: string) => Promise<void>;
   updateS3Retention: (retention: number) => Promise<void>;
+  updateS3BackupTime: (time: string) => Promise<void>;
   updateHyprnoteSchedule: (schedule: string) => Promise<void>;
   runHyprnoteImport: (pathOverride?: string) => Promise<{ report: ImportReport; logPath: string | null }>;
   updateAudioCleanup: (age?: string, schedule?: string) => Promise<void>;
@@ -205,26 +206,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     loadData();
   }, []);
 
-  // S3 backup scheduler — checks on mount + every 15 min while app is open.
-  // Disabled when s3Schedule === "off" or no creds saved.
+  // S3 backup scheduler — checks on mount + every 5 min while app is open.
+  // Roda no horário do dia escolhido (s3BackupTime, padrão 03:00): dispara na
+  // primeira checagem após o horário, uma vez por dia (daily) ou por semana
+  // (weekly). Desligado quando s3Schedule === "off" ou sem credenciais.
   const s3RunningRef = useRef(false);
   useEffect(() => {
-    const intervalMs = (() => {
-      switch (db.s3Schedule) {
-        case "daily":
-          return 24 * 60 * 60 * 1000;
-        case "weekly":
-          return 7 * 24 * 60 * 60 * 1000;
-        default:
-          return 0;
-      }
-    })();
-    if (!intervalMs) return;
+    if (db.s3Schedule !== "daily" && db.s3Schedule !== "weekly") return;
+    const weekly = db.s3Schedule === "weekly";
 
     const tryRun = async () => {
       if (s3RunningRef.current) return;
+      const now = Date.now();
       const last = db.s3LastBackupAt ? Date.parse(db.s3LastBackupAt) : 0;
-      if (Date.now() - last < intervalMs) return;
+
+      // Última ocorrência do horário escolhido em ou antes de agora.
+      const [hh, mm] = (db.s3BackupTime || "03:00").split(":").map((n) => parseInt(n, 10));
+      const slot = new Date();
+      slot.setHours(Number.isFinite(hh) ? hh : 3, Number.isFinite(mm) ? mm : 0, 0, 0);
+      if (slot.getTime() > now) slot.setTime(slot.getTime() - 24 * 60 * 60 * 1000);
+
+      // Devido se ainda não houve backup desde a última ocorrência do horário —
+      // e, no semanal, se passaram ao menos ~7 dias desde o último backup.
+      const due =
+        last < slot.getTime() && (!weekly || now - last >= 6.5 * 24 * 60 * 60 * 1000);
+      if (!due) return;
+
       s3RunningRef.current = true;
       try {
         const creds = await invoke<unknown>("load_s3_credentials");
@@ -242,10 +249,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     tryRun();
-    const t = setInterval(tryRun, 15 * 60 * 1000);
+    const t = setInterval(tryRun, 5 * 60 * 1000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db.s3Schedule, db.s3LastBackupAt]);
+  }, [db.s3Schedule, db.s3LastBackupAt, db.s3BackupTime]);
 
   const refreshDataRoot = async () => {
     try {
@@ -795,6 +802,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await saveDatabase((prev) => ({ ...prev, s3Retention: retention }));
   };
 
+  const updateS3BackupTime = async (time: string) => {
+    await saveDatabase((prev) => ({ ...prev, s3BackupTime: time }));
+  };
+
   const updateHyprnoteSchedule = async (schedule: string) => {
     await saveDatabase((prev) => ({
       ...prev,
@@ -1073,6 +1084,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateProfile,
         updateS3Schedule,
         updateS3Retention,
+        updateS3BackupTime,
         updateHyprnoteSchedule,
         runHyprnoteImport,
         updateAudioCleanup,
