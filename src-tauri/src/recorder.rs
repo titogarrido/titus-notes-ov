@@ -650,6 +650,9 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
     let mut sys_fifo: Vec<f32> = Vec::with_capacity(SYS_FIFO_MAX_SAMPLES);
     let mut pcm_i16: Vec<i16> = Vec::with_capacity(ENCODE_CHUNK_SAMPLES);
     let mut side_pcm: Vec<i16> = Vec::with_capacity(ENCODE_CHUNK_SAMPLES);
+    // Buffer do sidecar do sistema, escrito direto no handler de `Msg::Sys`
+    // (independente do clock do mic) — ver comentário no loop.
+    let mut sys_side_pcm: Vec<i16> = Vec::with_capacity(ENCODE_CHUNK_SAMPLES);
     let mut total_samples: u64 = 0;
     let mut peak = 0f32;
     let mut last_level_emit = Instant::now();
@@ -691,16 +694,8 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
             }
             encode_and_write(enc, &side_pcm, w)?;
         }
-        // Sidecar do sistema (alinhado ao mic, zero-padded) — o que os OUTROS falaram.
-        if let (Some(enc), Some(w)) = (sys_encoder.as_mut(), sys_writer.as_mut()) {
-            side_pcm.clear();
-            for i in 0..n {
-                let v = if i < take { sys_fifo[i] } else { 0.0 };
-                let v = v.clamp(-1.0, 1.0);
-                side_pcm.push((v * i16::MAX as f32) as i16);
-            }
-            encode_and_write(enc, &side_pcm, w)?;
-        }
+        // (O sidecar do sistema NÃO é escrito aqui — ele é gravado integralmente
+        // no handler de `Msg::Sys`, sem amarrar ao clock/contagem do microfone.)
 
         // Mix: soma o sistema no microfone e codifica o arquivo principal.
         for (i, s) in sys_fifo.drain(..take).enumerate() {
@@ -758,6 +753,20 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
                 }
             }
             Ok(Msg::Sys(v)) => {
+                // Sidecar do sistema (o que os OUTROS falaram): grava TODAS as
+                // amostras recebidas, no nível nativo e independente do clock do
+                // microfone. Assim a transcrição por canais nunca perde fala do
+                // sistema por drift de clock entre as duas capturas. O FIFO abaixo,
+                // usado só para a mixagem de playback, continua limitado a 1 s e
+                // pode descartar — sem prejudicar a transcrição, que sai do
+                // sidecar completo.
+                if let (Some(enc), Some(w)) = (sys_encoder.as_mut(), sys_writer.as_mut()) {
+                    sys_side_pcm.clear();
+                    for s in v.iter() {
+                        sys_side_pcm.push((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+                    }
+                    encode_and_write(enc, &sys_side_pcm, w)?;
+                }
                 sys_fifo.extend(v);
                 if sys_fifo.len() > SYS_FIFO_MAX_SAMPLES {
                     let excess = sys_fifo.len() - SYS_FIFO_MAX_SAMPLES;
@@ -803,8 +812,18 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
         return Ok(());
     }
     while let Ok(msg) = rx.try_recv() {
-        if let Msg::Mic(raw) = msg {
-            resampler.process_interleaved(&raw, channels, &mut mic_fifo);
+        match msg {
+            Msg::Mic(raw) => resampler.process_interleaved(&raw, channels, &mut mic_fifo),
+            Msg::Sys(v) => {
+                // Drena o áudio do sistema ainda no canal para o sidecar completo.
+                if let (Some(enc), Some(w)) = (sys_encoder.as_mut(), sys_writer.as_mut()) {
+                    sys_side_pcm.clear();
+                    for s in v.iter() {
+                        sys_side_pcm.push((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+                    }
+                    let _ = encode_and_write(enc, &sys_side_pcm, w);
+                }
+            }
         }
     }
     let mut rest: Vec<f32> = std::mem::take(&mut mic_fifo);

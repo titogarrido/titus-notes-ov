@@ -38,6 +38,10 @@ const CHANNEL_CHUNK_SECS: f32 = 20.0;
 const SPLIT_SEARCH_SECS: f32 = 5.0;
 /// Frame de análise de energia (30 ms @ 16 kHz).
 const ENERGY_FRAME: usize = 480;
+/// Sobreposição (s) reincluída no início do próximo chunk no batch: a fronteira
+/// é re-transcrita nos dois lados e a duplicata removida (`dedupe_seam`), para
+/// não perder a palavra que cai exatamente no ponto de corte.
+const CHUNK_OVERLAP_SECS: f32 = 0.7;
 
 pub struct TranscriberState {
     pub active: Mutex<Option<ActiveTranscription>>,
@@ -546,12 +550,16 @@ pub fn transcribe_samples_segments(
     let target = (chunk_secs * SAMPLE_RATE as f32) as usize;
     let search = (SPLIT_SEARCH_SECS * SAMPLE_RATE as f32) as usize;
     let min_chunk = SAMPLE_RATE as usize; // 1 s — fatias menores são zero-padded
+    let overlap = (CHUNK_OVERLAP_SECS * SAMPLE_RATE as f32) as usize;
 
     let mut segments: Vec<(f32, String)> = Vec::new();
     let mut pos: usize = 0;
+    // Texto cru do chunk anterior, usado pra remover a duplicação da sobreposição.
+    let mut prev_text = String::new();
     while pos < samples.len() {
         let remaining = samples.len() - pos;
-        let end = if remaining <= target + search {
+        let reached_end = remaining <= target + search;
+        let end = if reached_end {
             samples.len()
         } else {
             find_quiet_split(samples, pos + target, search)
@@ -565,15 +573,34 @@ pub fn transcribe_samples_segments(
         let result = model
             .transcribe_with(&chunk, &ParakeetParams::default())
             .map_err(|e| format!("Falha na inferência: {}", e))?;
-        let text = result.text.trim().to_string();
-        if !text.is_empty() {
-            segments.push((pos as f32 / SAMPLE_RATE as f32, text));
+        let raw = result.text.trim().to_string();
+        if !raw.is_empty() {
+            // Remove as palavras iniciais que repetem o fim do chunk anterior
+            // (a fronteira sobreposta foi transcrita nos dois chunks).
+            let text = if prev_text.is_empty() {
+                raw.clone()
+            } else {
+                dedupe_seam(&prev_text, &raw)
+            };
+            let text = text.trim().to_string();
+            if !text.is_empty() {
+                segments.push((pos as f32 / SAMPLE_RATE as f32, text));
+            }
+            prev_text = raw;
+        } else {
+            // Chunk silencioso: não há fronteira a deduplicar com o próximo.
+            prev_text.clear();
         }
 
-        pos = end;
-        if !on_progress(pos as f32 / SAMPLE_RATE as f32) {
+        if !on_progress(end as f32 / SAMPLE_RATE as f32) {
             return Err("Transcrição cancelada.".to_string());
         }
+        if reached_end {
+            break;
+        }
+        // Recua o início do próximo chunk pra reincluir a fronteira sobreposta
+        // (target ≫ overlap, então `pos` sempre avança).
+        pos = end.saturating_sub(overlap);
     }
 
     Ok(segments)
@@ -592,6 +619,40 @@ pub fn transcribe_samples_chunked(
         .map(|(t, s)| format!("[{}] {}", format_timestamp(t), s))
         .collect::<Vec<_>>()
         .join("\n\n"))
+}
+
+/// Remove do começo de `next` as palavras que repetem o fim de `prev` — limpa a
+/// duplicação criada pela sobreposição entre chunks (`CHUNK_OVERLAP_SECS`).
+/// Compara só tokens normalizados (minúsculas, sem pontuação) e no máximo `MAX_K`
+/// palavras, pra não apagar repetições legítimas distantes do corte.
+fn dedupe_seam(prev: &str, next: &str) -> String {
+    const MAX_K: usize = 8;
+    let prev_words: Vec<&str> = prev.split_whitespace().collect();
+    let next_words: Vec<&str> = next.split_whitespace().collect();
+    let norm = |w: &str| -> String {
+        w.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    };
+    let max_k = prev_words.len().min(next_words.len()).min(MAX_K);
+    let mut best = 0;
+    for k in 1..=max_k {
+        let prev_tail = &prev_words[prev_words.len() - k..];
+        let next_head = &next_words[..k];
+        if prev_tail
+            .iter()
+            .map(|w| norm(w))
+            .eq(next_head.iter().map(|w| norm(w)))
+        {
+            best = k;
+        }
+    }
+    if best > 0 {
+        next_words[best..].join(" ")
+    } else {
+        next.to_string()
+    }
 }
 
 /// Mescla segmentos de dois canais num transcript único, ordenado por tempo e
@@ -625,9 +686,18 @@ fn merge_labeled(
 // janela e emite `transcription-live` para a UI ir preenchendo o transcript em
 // tempo real. O modelo é carregado uma vez e fica em RAM durante a reunião.
 
-/// Janela alvo (s) acumulada antes de transcrever ao vivo.
-const LIVE_WINDOW_SECS: f32 = 12.0;
-/// Margem (s) de busca por uma pausa perto do fim da janela.
+/// Janela MÁXIMA (s) acumulada antes de forçar a transcrição ao vivo mesmo sem
+/// pausa. Menor = menos latência; o flush por pausa (VAD) abaixo costuma disparar
+/// bem antes disso.
+const LIVE_MAX_WINDOW_SECS: f32 = 8.0;
+/// Fala mínima acumulada (s) antes de um flush antecipado por pausa — evita
+/// fragmentar o transcript em micro-pausas.
+const LIVE_MIN_FLUSH_SECS: f32 = 2.5;
+/// Silêncio no fim do buffer (s) que dispara o flush antecipado (fim de turno).
+const LIVE_PAUSE_SECS: f32 = 0.6;
+/// RMS abaixo disso conta como silêncio para o VAD do flush ao vivo.
+const LIVE_SILENCE_RMS: f32 = 0.01;
+/// Margem (s) de busca por uma pausa perto do fim da janela máxima.
 const LIVE_SPLIT_SEARCH_SECS: f32 = 1.5;
 
 enum LiveMsg {
@@ -702,24 +772,46 @@ fn run_live_session(
         serde_json::json!({ "noteId": note_id }),
     );
 
-    let window = (LIVE_WINDOW_SECS * SAMPLE_RATE as f32) as usize;
+    let max_window = (LIVE_MAX_WINDOW_SECS * SAMPLE_RATE as f32) as usize;
+    let min_flush = (LIVE_MIN_FLUSH_SECS * SAMPLE_RATE as f32) as usize;
+    let pause = (LIVE_PAUSE_SECS * SAMPLE_RATE as f32) as usize;
     let search = (LIVE_SPLIT_SEARCH_SECS * SAMPLE_RATE as f32) as usize;
     let min_chunk = SAMPLE_RATE as usize; // 1 s
 
-    let mut buf: Vec<f32> = Vec::with_capacity(window * 2);
+    let mut buf: Vec<f32> = Vec::with_capacity(max_window * 2);
     let mut emitted_samples: usize = 0; // p/ o timestamp do início de cada janela
 
     loop {
         match rx.recv() {
             Ok(LiveMsg::Samples(s)) => {
                 buf.extend(s);
-                while buf.len() >= window {
-                    // Corta numa pausa perto do fim da janela (evita partir palavra).
-                    let target = window.saturating_sub(search / 2);
-                    let split = find_quiet_split(&buf, target, search).clamp(min_chunk, buf.len());
-                    let chunk: Vec<f32> = buf.drain(..split).collect();
-                    live_emit_chunk(&app, &mut model, &chunk, emitted_samples, &note_id, min_chunk);
-                    emitted_samples += split;
+                // Dois gatilhos de flush, o que vier primeiro:
+                //  1) PAUSA (VAD): já há fala suficiente e o buffer termina num
+                //     silêncio (fim de turno) — emite na hora, cortando a latência;
+                //  2) TETO: o buffer atingiu a janela máxima sem pausa — corta no
+                //     ponto mais silencioso perto do fim pra não partir palavra.
+                loop {
+                    if buf.len() >= max_window {
+                        let target = max_window.saturating_sub(search / 2);
+                        let split =
+                            find_quiet_split(&buf, target, search).clamp(min_chunk, buf.len());
+                        let chunk: Vec<f32> = buf.drain(..split).collect();
+                        live_emit_chunk(
+                            &app, &mut model, &chunk, emitted_samples, &note_id, min_chunk,
+                        );
+                        emitted_samples += split;
+                        continue;
+                    }
+                    if buf.len() >= min_flush && trailing_silence(&buf, LIVE_SILENCE_RMS) >= pause {
+                        let n = buf.len();
+                        let chunk = std::mem::take(&mut buf);
+                        live_emit_chunk(
+                            &app, &mut model, &chunk, emitted_samples, &note_id, min_chunk,
+                        );
+                        emitted_samples += n;
+                        continue;
+                    }
+                    break;
                 }
             }
             Ok(LiveMsg::Finish) => {
@@ -811,8 +903,8 @@ fn update_progress(
 fn agc_normalize(samples: &mut [f32]) {
     const FRAME: usize = 480; // 30 ms @ 16 kHz
     const TARGET_RMS: f32 = 0.1; // ~ -20 dBFS
-    const NOISE_FLOOR_RMS: f32 = 0.005; // abaixo disso: silêncio/ruído → ganho 1.0
-    const MAX_GAIN: f32 = 10.0;
+    const NOISE_FLOOR_RMS: f32 = 0.006; // abaixo disso: silêncio/ruído → ganho 1.0
+    const MAX_GAIN: f32 = 8.0; // teto menor: não amplifica ruído de fundo a nível de fala
     const ATTACK: f32 = 0.5; // ganho caindo (som alto): reage rápido
     const RELEASE: f32 = 0.05; // ganho subindo (trecho baixo): sobe devagar
 
@@ -873,6 +965,26 @@ fn find_quiet_split(samples: &[f32], target: usize, search: usize) -> usize {
         offset += ENERGY_FRAME;
     }
     best
+}
+
+/// Conta quantas amostras de silêncio (RMS < `threshold`, em frames de 30 ms) há
+/// no FIM de `buf` — usado pelo VAD do flush ao vivo pra detectar a pausa (fim de
+/// turno) sem partir palavra.
+fn trailing_silence(buf: &[f32], threshold: f32) -> usize {
+    const FRAME: usize = 480; // 30 ms @ 16 kHz
+    let mut silent = 0usize;
+    let mut end = buf.len();
+    while end >= FRAME {
+        let start = end - FRAME;
+        let rms = (buf[start..end].iter().map(|s| s * s).sum::<f32>() / FRAME as f32).sqrt();
+        if rms < threshold {
+            silent += FRAME;
+            end = start;
+        } else {
+            break;
+        }
+    }
+    silent
 }
 
 fn format_timestamp(secs: f32) -> String {

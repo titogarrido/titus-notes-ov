@@ -159,6 +159,7 @@ interface AppContextType {
   runHyprnoteImport: (pathOverride?: string) => Promise<{ report: ImportReport; logPath: string | null }>;
   updateAudioCleanup: (age?: string, schedule?: string) => Promise<void>;
   runAudioCleanup: (ageOverride?: string) => Promise<AudioCleanupResult>;
+  runOrphanAudioCleanup: () => Promise<AudioCleanupResult>;
   dataRoot: DataRootInfo | null;
   refreshDataRoot: () => Promise<void>;
   setDataRoot: (path: string | null, migrate: boolean) => Promise<DataRootInfo>;
@@ -728,6 +729,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const toDelete = imagesInNote.filter((f) => !referenced.has(f));
         await deleteUnreferencedImages(toDelete);
       }
+      // Remove a gravação associada (mp3 + sidecars *.mic/*.sys), a menos que
+      // outra nota referencie o mesmo arquivo.
+      if (note.audioFile) {
+        const stillUsed = nextNotesSnapshot.some((n) => n.audioFile === note!.audioFile);
+        if (!stillUsed) {
+          try {
+            await invoke("delete_audios", { filenames: [note.audioFile] });
+          } catch (err) {
+            console.error("Falha ao remover o áudio da nota deletada:", err);
+          }
+        }
+      }
     }
   };
 
@@ -964,6 +977,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return result;
   };
 
+  // Remove gravações órfãs (arquivos em files/audio/ que nenhuma nota
+  // referencia). Monta o conjunto de áudios em uso — audioFile e micFile de
+  // todas as notas — e o backend apaga o resto (com seus sidecars).
+  const runOrphanAudioCleanup = async (): Promise<AudioCleanupResult> => {
+    const referenced = Array.from(
+      new Set(
+        db.notes.flatMap((n) => [n.audioFile, n.micFile].filter((f): f is string => !!f)),
+      ),
+    );
+    const result = await invoke<AudioCleanupResult>("cleanup_orphan_audios", { referenced });
+    await saveDatabase((prev) => ({ ...prev, audioCleanupLastAt: new Date().toISOString() }));
+    return result;
+  };
+
   // Audio cleanup scheduler — checks every hour while app is open.
   const audioCleanupRunningRef = useRef(false);
   useEffect(() => {
@@ -1094,6 +1121,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         runHyprnoteImport,
         updateAudioCleanup,
         runAudioCleanup,
+        runOrphanAudioCleanup,
         dataRoot,
         refreshDataRoot,
         setDataRoot,

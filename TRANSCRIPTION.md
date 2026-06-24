@@ -366,7 +366,7 @@ Testa:
 ## Limitações e Considerações
 
 1. **Modelo único**: Apenas Parakeet TDT 0.6b v3 suportado
-2. **Idioma**: Modelo treinado principalmente para inglês
+2. **Idioma**: Parakeet TDT 0.6b **v3** é multilíngue (25 idiomas europeus, incluindo português) com detecção automática de idioma — não é necessário configurar o idioma
 3. **Hardware**: Requer ~1GB RAM durante transcrição
 4. **Performance**: ~0.5-1x tempo real em hardware moderno
 5. **Qualidade**: Melhor com áudio limpo (16kHz, mono)

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
 import {
   Settings,
@@ -21,6 +21,7 @@ import {
   ArrowUpCircle,
   Cloud,
   Captions,
+  Clock,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -70,6 +71,7 @@ export const SettingsView: React.FC = () => {
     runHyprnoteImport,
     updateAudioCleanup,
     runAudioCleanup,
+    runOrphanAudioCleanup,
     dataRoot,
     setDataRoot,
   } = useApp();
@@ -269,6 +271,12 @@ export const SettingsView: React.FC = () => {
     | { kind: "ok"; result: AudioCleanupResult }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
+  const [orphanCleanupStatus, setOrphanCleanupStatus] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ok"; result: AudioCleanupResult }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
 
   useEffect(() => {
     setAudioAge(db.audioCleanupAge || "3m");
@@ -292,6 +300,15 @@ export const SettingsView: React.FC = () => {
       setAudioCleanupStatus({ kind: "ok", result });
     } catch (e: any) {
       setAudioCleanupStatus({ kind: "error", message: e?.message || String(e) });
+    }
+  };
+  const handleRunOrphanCleanup = async () => {
+    setOrphanCleanupStatus({ kind: "loading" });
+    try {
+      const result = await runOrphanAudioCleanup();
+      setOrphanCleanupStatus({ kind: "ok", result });
+    } catch (e: any) {
+      setOrphanCleanupStatus({ kind: "error", message: e?.message || String(e) });
     }
   };
   const [importing, setImporting] = useState(false);
@@ -702,6 +719,38 @@ export const SettingsView: React.FC = () => {
     setBackupTime(v);
     if (v) await updateS3BackupTime(v);
   };
+
+  // Próximo backup agendado — espelha a lógica do agendador em AppContext.
+  // Retorna null quando desligado; { due: true } quando já está vencido (roda
+  // na próxima verificação); senão a data/hora aproximada do próximo backup.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const nextBackup = useMemo<{ due: boolean; at: Date } | null>(() => {
+    if (schedule !== "daily" && schedule !== "weekly") return null;
+    const weekly = schedule === "weekly";
+    const now = Date.now();
+    const last = db.s3LastBackupAt ? Date.parse(db.s3LastBackupAt) : 0;
+    const [hh, mm] = (backupTime || "03:00").split(":").map((n) => parseInt(n, 10));
+    const h = Number.isFinite(hh) ? hh : 3;
+    const m = Number.isFinite(mm) ? mm : 0;
+
+    // Última ocorrência do horário escolhido em ou antes de agora.
+    const slot = new Date();
+    slot.setHours(h, m, 0, 0);
+    if (slot.getTime() > now) slot.setTime(slot.getTime() - DAY_MS);
+
+    const due = last < slot.getTime() && (!weekly || now - last >= 6.5 * DAY_MS);
+    if (due) return { due: true, at: new Date(now) };
+
+    if (!weekly) {
+      // Diário: próxima ocorrência do horário (slot + 24h).
+      return { due: false, at: new Date(slot.getTime() + DAY_MS) };
+    }
+    // Semanal: ~7 dias após o último, ajustado para o horário escolhido.
+    const next = new Date(last + 7 * DAY_MS);
+    next.setHours(h, m, 0, 0);
+    if (next.getTime() < last + 6.5 * DAY_MS) next.setTime(next.getTime() + DAY_MS);
+    return { due: false, at: next };
+  }, [schedule, backupTime, db.s3LastBackupAt]);
 
   // ---- Updater ----
   const [appVersion, setAppVersion] = useState<string>("");
@@ -1565,6 +1614,41 @@ export const SettingsView: React.FC = () => {
 
           <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 12, paddingTop: 12 }}>
             <div className="settings-text-block">
+              <span className="settings-title">Gravações órfãs</span>
+              <span className="settings-desc">
+                Apaga áudios que nenhuma nota usa mais (independente da idade). Útil após excluir notas antigas.
+              </span>
+            </div>
+            <button
+              className="btn-secondary"
+              onClick={handleRunOrphanCleanup}
+              disabled={orphanCleanupStatus.kind === "loading"}
+              style={{ display: "flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}
+            >
+              {orphanCleanupStatus.kind === "loading" ? <Loader2 size={14} className="spin" /> : <Trash2 size={14} />}
+              <span>{orphanCleanupStatus.kind === "loading" ? "Limpando..." : "Limpar órfãs"}</span>
+            </button>
+          </div>
+
+          {orphanCleanupStatus.kind === "ok" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#1f8e3d", marginTop: 6 }}>
+              <CheckCircle2 size={14} />
+              <span>
+                {orphanCleanupStatus.result.deleted.length} arquivo(s) apagado(s)
+                {" · "}
+                {(orphanCleanupStatus.result.bytesFreed / 1024 / 1024).toFixed(2)} MB liberados
+                {orphanCleanupStatus.result.errors.length > 0 && ` · ${orphanCleanupStatus.result.errors.length} erro(s)`}
+              </span>
+            </div>
+          )}
+          {orphanCleanupStatus.kind === "error" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#cf222e", marginTop: 6 }}>
+              <AlertCircle size={14} /> {orphanCleanupStatus.message}
+            </div>
+          )}
+
+          <div className="settings-row" style={{ borderTop: "1px solid var(--border-color)", marginTop: 12, paddingTop: 12 }}>
+            <div className="settings-text-block">
               <span className="settings-title">Limpeza automática</span>
               <span className="settings-desc">Roda enquanto o app está aberto.</span>
             </div>
@@ -1940,6 +2024,28 @@ export const SettingsView: React.FC = () => {
                 onChange={(e) => handleBackupTimeChange(e.target.value)}
                 style={{ width: 120 }}
               />
+            </div>
+          )}
+
+          {nextBackup && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                fontSize: "12px",
+                color: "var(--color-text-muted)",
+                marginTop: 8,
+              }}
+            >
+              <Clock size={14} />
+              {nextBackup.due ? (
+                <span>Próximo backup: na próxima verificação (com o app aberto).</span>
+              ) : (
+                <span>
+                  Próximo backup: aprox. {nextBackup.at.toLocaleString("pt-BR")} (com o app aberto).
+                </span>
+              )}
             </div>
           )}
         </div>

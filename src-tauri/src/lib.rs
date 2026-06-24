@@ -722,6 +722,86 @@ fn cleanup_old_audios(app: AppHandle, months: u32) -> Result<AudioCleanupResult,
     Ok(result)
 }
 
+/// Remove gravações órfãs: arquivos em `files/audio/` que nenhuma nota
+/// referencia. `referenced` é a lista de `audioFile`/`micFile` em uso vinda do
+/// frontend; mantemos esses arquivos e seus sidecars por canal (`*.mic`/`*.sys`).
+/// Por segurança, ignora arquivos modificados há menos de 5 min — uma gravação
+/// em andamento ainda não tem `audioFile` na nota e seria órfã aos olhos desta
+/// varredura.
+#[tauri::command]
+fn cleanup_orphan_audios(
+    app: AppHandle,
+    referenced: Vec<String>,
+) -> Result<AudioCleanupResult, String> {
+    let mut result = AudioCleanupResult::default();
+    let audio_dir = get_audio_dir(&app)?;
+    if !audio_dir.exists() {
+        return Ok(result);
+    }
+
+    let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for name in &referenced {
+        if name.is_empty() {
+            continue;
+        }
+        keep.insert(name.clone());
+        keep.insert(crate::recorder::mic_sidecar_name(name));
+        keep.insert(crate::recorder::sys_sidecar_name(name));
+    }
+
+    const RECENT_GUARD_SECS: u64 = 5 * 60;
+    let now = std::time::SystemTime::now();
+
+    let entries = match fs::read_dir(&audio_dir) {
+        Ok(e) => e,
+        Err(e) => return Err(format!("Falha ao ler diretório de áudios: {}", e)),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                result.errors.push(e.to_string());
+                continue;
+            }
+        };
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if keep.contains(&name) {
+            continue;
+        }
+        let metadata = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) => {
+                result.errors.push(format!("{}: {}", path.display(), e));
+                continue;
+            }
+        };
+        // Pula arquivos recém-modificados (gravação possivelmente em andamento).
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(age) = now.duration_since(modified) {
+                if age.as_secs() < RECENT_GUARD_SECS {
+                    continue;
+                }
+            }
+        }
+        let size = metadata.len();
+        match fs::remove_file(&path) {
+            Ok(_) => {
+                result.bytes_freed += size;
+                result.deleted.push(name);
+            }
+            Err(e) => result.errors.push(format!("{}: {}", path.display(), e)),
+        }
+    }
+    Ok(result)
+}
+
 fn collect_files_recursive(
     dir: &PathBuf,
     base: &PathBuf,
@@ -1343,6 +1423,7 @@ pub fn run() {
             list_s3_backups,
             restore_from_s3,
             cleanup_old_audios,
+            cleanup_orphan_audios,
             recorder::start_recording,
             recorder::stop_recording,
             recorder::cancel_recording,
