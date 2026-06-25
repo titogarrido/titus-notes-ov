@@ -489,11 +489,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ),
     );
     track(
-      listen<{ noteId: string; text: string; start: number }>(
+      listen<{ noteId: string; text: string; start: number; speaker?: string | null }>(
         "transcription-live",
         async (e) => {
-          const { noteId, text, start } = e.payload;
-          const line = `[${fmtTs(start)}] ${text}`;
+          const { noteId, text, start, speaker } = e.payload;
+          // Rótulo de quem falou (Você/Outros) quando a gravação tem áudio do
+          // sistema — mesmo formato do transcript por canais do batch.
+          const line = speaker
+            ? `[${fmtTs(start)}] (${speaker}) ${text}`
+            : `[${fmtTs(start)}] ${text}`;
           await saveDatabase((prev) => ({
             ...prev,
             notes: prev.notes.map((n) =>

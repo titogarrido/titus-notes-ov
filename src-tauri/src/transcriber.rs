@@ -681,10 +681,11 @@ fn merge_labeled(
 // Transcrição ao vivo (durante a gravação)
 // ---------------------------------------------------------------------
 //
-// O gravador encaminha as amostras mixadas (mono 16 kHz) para esta sessão, que
-// acumula janelas de ~LIVE_WINDOW_SECS (cortando em pausas), transcreve cada
-// janela e emite `transcription-live` para a UI ir preenchendo o transcript em
-// tempo real. O modelo é carregado uma vez e fica em RAM durante a reunião.
+// O gravador encaminha DOIS canais separados (microfone = "Você", áudio do
+// sistema = "Outros") para esta sessão. Cada canal acumula janelas próprias
+// (cortando em pausas via VAD), transcreve com o MESMO modelo (carregado uma vez,
+// em RAM durante a reunião) e emite `transcription-live` rotulado com quem falou —
+// igual ao batch por canais. Janelas só de silêncio avançam o relógio sem inferir.
 
 /// Janela MÁXIMA (s) acumulada antes de forçar a transcrição ao vivo mesmo sem
 /// pausa. Menor = menos latência; o flush por pausa (VAD) abaixo costuma disparar
@@ -699,9 +700,15 @@ const LIVE_PAUSE_SECS: f32 = 0.6;
 const LIVE_SILENCE_RMS: f32 = 0.01;
 /// Margem (s) de busca por uma pausa perto do fim da janela máxima.
 const LIVE_SPLIT_SEARCH_SECS: f32 = 1.5;
+/// RMS mínimo da janela para valer a inferência ao vivo — abaixo disso é
+/// silêncio/ruído: avança o relógio do canal sem chamar o modelo.
+const LIVE_SPEECH_RMS: f32 = 0.006;
 
 enum LiveMsg {
-    Samples(Vec<f32>),
+    /// Lote do microfone (Você), mono 16 kHz.
+    Mic(Vec<f32>),
+    /// Lote do áudio do sistema (Outros), mono 16 kHz.
+    Sys(Vec<f32>),
     Finish,
     Abort,
 }
@@ -714,9 +721,13 @@ pub struct LiveHandle {
 }
 
 impl LiveHandle {
-    /// Encaminha um lote de amostras mono 16 kHz para transcrever ao vivo.
-    pub fn feed(&self, samples: Vec<f32>) {
-        let _ = self.tx.send(LiveMsg::Samples(samples));
+    /// Encaminha um lote do microfone (Você), mono 16 kHz.
+    pub fn feed_mic(&self, samples: Vec<f32>) {
+        let _ = self.tx.send(LiveMsg::Mic(samples));
+    }
+    /// Encaminha um lote do áudio do sistema (Outros), mono 16 kHz.
+    pub fn feed_sys(&self, samples: Vec<f32>) {
+        let _ = self.tx.send(LiveMsg::Sys(samples));
     }
     /// Encerra normalmente: o worker transcreve o resto e finaliza sozinho.
     pub fn finish(self) {
@@ -728,9 +739,33 @@ impl LiveHandle {
     }
 }
 
-/// Inicia uma sessão de transcrição ao vivo para `note_id`. Falha (sem efeito
-/// colateral) se o modelo não estiver baixado — o chamador cai para batch.
-pub fn spawn_live_session(app: &AppHandle, note_id: String) -> Result<LiveHandle, String> {
+/// Estado de um canal ao vivo: buffer acumulado, posição já emitida (relógio do
+/// canal) e o rótulo de quem falou (`None` = sem rótulo, gravação só-microfone).
+struct LiveChannel {
+    buf: Vec<f32>,
+    emitted: usize,
+    speaker: Option<&'static str>,
+}
+
+impl LiveChannel {
+    fn new(speaker: Option<&'static str>, max_window: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(max_window * 2),
+            emitted: 0,
+            speaker,
+        }
+    }
+}
+
+/// Inicia uma sessão de transcrição ao vivo para `note_id`. Com `labeled = true`
+/// (há áudio do sistema), as emissões vêm rotuladas "Você"/"Outros"; sem ele, a
+/// gravação é só-microfone e o texto sai sem rótulo. Falha (sem efeito colateral)
+/// se o modelo não estiver baixado — o chamador cai para batch.
+pub fn spawn_live_session(
+    app: &AppHandle,
+    note_id: String,
+    labeled: bool,
+) -> Result<LiveHandle, String> {
     let status = {
         let state = app.state::<TranscriberState>();
         model_status_internal(app, &state)?
@@ -743,15 +778,25 @@ pub fn spawn_live_session(app: &AppHandle, note_id: String) -> Result<LiveHandle
     let app2 = app.clone();
     std::thread::Builder::new()
         .name("live-transcriber".to_string())
-        .spawn(move || run_live_session(app2, model_dir, note_id, rx))
+        .spawn(move || run_live_session(app2, model_dir, note_id, labeled, rx))
         .map_err(|e| format!("Falha ao iniciar transcrição ao vivo: {}", e))?;
     Ok(LiveHandle { tx })
+}
+
+/// Parâmetros (em amostras) compartilhados pelos dois canais ao vivo.
+struct LiveParams {
+    max_window: usize,
+    min_flush: usize,
+    pause: usize,
+    search: usize,
+    min_chunk: usize,
 }
 
 fn run_live_session(
     app: AppHandle,
     model_dir: PathBuf,
     note_id: String,
+    labeled: bool,
     rx: std::sync::mpsc::Receiver<LiveMsg>,
 ) {
     let mut model = match ParakeetModel::load(&model_dir, &Quantization::Int8) {
@@ -772,54 +817,32 @@ fn run_live_session(
         serde_json::json!({ "noteId": note_id }),
     );
 
-    let max_window = (LIVE_MAX_WINDOW_SECS * SAMPLE_RATE as f32) as usize;
-    let min_flush = (LIVE_MIN_FLUSH_SECS * SAMPLE_RATE as f32) as usize;
-    let pause = (LIVE_PAUSE_SECS * SAMPLE_RATE as f32) as usize;
-    let search = (LIVE_SPLIT_SEARCH_SECS * SAMPLE_RATE as f32) as usize;
-    let min_chunk = SAMPLE_RATE as usize; // 1 s
+    let p = LiveParams {
+        max_window: (LIVE_MAX_WINDOW_SECS * SAMPLE_RATE as f32) as usize,
+        min_flush: (LIVE_MIN_FLUSH_SECS * SAMPLE_RATE as f32) as usize,
+        pause: (LIVE_PAUSE_SECS * SAMPLE_RATE as f32) as usize,
+        search: (LIVE_SPLIT_SEARCH_SECS * SAMPLE_RATE as f32) as usize,
+        min_chunk: SAMPLE_RATE as usize, // 1 s
+    };
 
-    let mut buf: Vec<f32> = Vec::with_capacity(max_window * 2);
-    let mut emitted_samples: usize = 0; // p/ o timestamp do início de cada janela
+    // Microfone só ganha rótulo "Você" quando há também o canal do sistema; sem
+    // ele a gravação é só-microfone (sem rótulo, igual ao batch de arquivo único).
+    let mut mic = LiveChannel::new(if labeled { Some("Você") } else { None }, p.max_window);
+    let mut sys = LiveChannel::new(Some("Outros"), p.max_window);
 
     loop {
         match rx.recv() {
-            Ok(LiveMsg::Samples(s)) => {
-                buf.extend(s);
-                // Dois gatilhos de flush, o que vier primeiro:
-                //  1) PAUSA (VAD): já há fala suficiente e o buffer termina num
-                //     silêncio (fim de turno) — emite na hora, cortando a latência;
-                //  2) TETO: o buffer atingiu a janela máxima sem pausa — corta no
-                //     ponto mais silencioso perto do fim pra não partir palavra.
-                loop {
-                    if buf.len() >= max_window {
-                        let target = max_window.saturating_sub(search / 2);
-                        let split =
-                            find_quiet_split(&buf, target, search).clamp(min_chunk, buf.len());
-                        let chunk: Vec<f32> = buf.drain(..split).collect();
-                        live_emit_chunk(
-                            &app, &mut model, &chunk, emitted_samples, &note_id, min_chunk,
-                        );
-                        emitted_samples += split;
-                        continue;
-                    }
-                    if buf.len() >= min_flush && trailing_silence(&buf, LIVE_SILENCE_RMS) >= pause {
-                        let n = buf.len();
-                        let chunk = std::mem::take(&mut buf);
-                        live_emit_chunk(
-                            &app, &mut model, &chunk, emitted_samples, &note_id, min_chunk,
-                        );
-                        emitted_samples += n;
-                        continue;
-                    }
-                    break;
-                }
+            Ok(LiveMsg::Mic(s)) => {
+                mic.buf.extend(s);
+                live_flush_channel(&app, &mut model, &mut mic, &note_id, &p, false);
+            }
+            Ok(LiveMsg::Sys(s)) => {
+                sys.buf.extend(s);
+                live_flush_channel(&app, &mut model, &mut sys, &note_id, &p, false);
             }
             Ok(LiveMsg::Finish) => {
-                // Última janela parcial (ignora se for só silêncio).
-                if !buf.is_empty() && buf.iter().any(|v| v.abs() > 1e-3) {
-                    let chunk = std::mem::take(&mut buf);
-                    live_emit_chunk(&app, &mut model, &chunk, emitted_samples, &note_id, min_chunk);
-                }
+                live_flush_channel(&app, &mut model, &mut mic, &note_id, &p, true);
+                live_flush_channel(&app, &mut model, &mut sys, &note_id, &p, true);
                 break;
             }
             Ok(LiveMsg::Abort) | Err(_) => break,
@@ -834,7 +857,59 @@ fn run_live_session(
     );
 }
 
-/// Transcreve uma janela e emite `transcription-live` se houver texto.
+/// Drena o buffer de um canal emitindo as janelas prontas. `final_flush` força a
+/// saída do resto parcial (encerramento). Cada janela drenada avança o relógio do
+/// canal mesmo quando é só silêncio (mantém os timestamps alinhados ao tempo real
+/// sem gastar inferência à toa).
+fn live_flush_channel(
+    app: &AppHandle,
+    model: &mut ParakeetModel,
+    ch: &mut LiveChannel,
+    note_id: &str,
+    p: &LiveParams,
+    final_flush: bool,
+) {
+    loop {
+        // Decide a próxima janela a drenar:
+        //  - TETO: buffer atingiu a janela máxima → corta numa pausa perto do fim;
+        //  - PAUSA (VAD): há fala suficiente e o buffer termina num silêncio;
+        //  - FINAL: encerramento → drena o resto.
+        let split = if ch.buf.len() >= p.max_window {
+            let target = p.max_window.saturating_sub(p.search / 2);
+            find_quiet_split(&ch.buf, target, p.search).clamp(p.min_chunk, ch.buf.len())
+        } else if ch.buf.len() >= p.min_flush
+            && trailing_silence(&ch.buf, LIVE_SILENCE_RMS) >= p.pause
+        {
+            ch.buf.len()
+        } else if final_flush && !ch.buf.is_empty() {
+            ch.buf.len()
+        } else {
+            return;
+        };
+
+        let chunk: Vec<f32> = ch.buf.drain(..split).collect();
+        // Só infere se a janela tiver energia de fala — silêncio/ruído avança o
+        // relógio sem chamar o modelo (economia e sem texto fantasma).
+        if rms(&chunk) >= LIVE_SPEECH_RMS {
+            live_emit_chunk(app, model, &chunk, ch.emitted, note_id, p.min_chunk, ch.speaker);
+        }
+        ch.emitted += split;
+        if final_flush {
+            return; // no encerramento drenamos o resto de uma vez
+        }
+    }
+}
+
+/// RMS de uma janela (raiz da energia média).
+fn rms(chunk: &[f32]) -> f32 {
+    if chunk.is_empty() {
+        return 0.0;
+    }
+    (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt()
+}
+
+/// Transcreve uma janela e emite `transcription-live` (com `speaker`, se houver)
+/// quando há texto.
 fn live_emit_chunk(
     app: &AppHandle,
     model: &mut ParakeetModel,
@@ -842,9 +917,10 @@ fn live_emit_chunk(
     start_samples: usize,
     note_id: &str,
     min_chunk: usize,
+    speaker: Option<&str>,
 ) {
     // Cópia mutável: zero-pad fatias < 1 s e normaliza o loudness (AGC) antes da
-    // inferência — levanta trechos baixos (ex.: remoto falando no seu silêncio).
+    // inferência — levanta trechos baixos (ex.: remoto falando mais baixo).
     let mut input: Vec<f32> = chunk.to_vec();
     if input.len() < min_chunk {
         input.resize(min_chunk, 0.0);
@@ -859,6 +935,7 @@ fn live_emit_chunk(
                     "noteId": note_id,
                     "text": text,
                     "start": start_samples as f32 / SAMPLE_RATE as f32,
+                    "speaker": speaker,
                 }),
             );
         }

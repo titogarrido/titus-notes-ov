@@ -660,10 +660,13 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
     // "manual" = stop_recording assumiu o estado; nos demais a thread se remove.
     let mut finish_reason = "manual";
 
-    // Sessão de transcrição ao vivo (opcional): encaminha o mix conforme grava.
-    // Se o modelo não estiver baixado, cai silenciosamente para batch.
+    // Sessão de transcrição ao vivo (opcional): encaminha os DOIS canais (mic e
+    // sistema) separados conforme grava, para rotular "Você"/"Outros" igual ao
+    // batch. `labeled` só quando há áudio do sistema. Sem o modelo baixado, cai
+    // silenciosamente para batch.
     let mut live_handle: Option<crate::transcriber::LiveHandle> = if job.live {
-        crate::transcriber::spawn_live_session(&job.app, job.note_id.clone()).ok()
+        crate::transcriber::spawn_live_session(&job.app, job.note_id.clone(), has_system_audio)
+            .ok()
     } else {
         None
     };
@@ -697,6 +700,13 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
         // (O sidecar do sistema NÃO é escrito aqui — ele é gravado integralmente
         // no handler de `Msg::Sys`, sem amarrar ao clock/contagem do microfone.)
 
+        // Transcrição ao vivo — canal do microfone (Você): encaminha o mic PURO
+        // (pré-mix). O canal do sistema (Outros) é encaminhado à parte, no handler
+        // de `Msg::Sys`, para a sessão ao vivo rotular quem falou.
+        if let Some(h) = live.as_ref() {
+            h.feed_mic(mic_chunk.clone());
+        }
+
         // Mix: soma o sistema no microfone e codifica o arquivo principal.
         for (i, s) in sys_fifo.drain(..take).enumerate() {
             mic_chunk[i] += s;
@@ -715,10 +725,6 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
         let rms = (sq_sum / n as f64).sqrt() as f32;
         *total += n as u64;
         encode_and_write(encoder, &pcm_i16, writer)?;
-        // Transcrição ao vivo: encaminha o mix (todos) antes de limpar o lote.
-        if let Some(h) = live.as_ref() {
-            h.feed(mic_chunk.clone());
-        }
         mic_chunk.clear();
         Ok(rms)
     };
@@ -766,6 +772,12 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
                         sys_side_pcm.push((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
                     }
                     encode_and_write(enc, &sys_side_pcm, w)?;
+                }
+                // Transcrição ao vivo — canal do sistema (Outros): encaminha o
+                // áudio do sistema cru (contínuo, inclui silêncio) para manter o
+                // relógio desse canal alinhado ao tempo real.
+                if let Some(h) = live_handle.as_ref() {
+                    h.feed_sys(v.clone());
                 }
                 sys_fifo.extend(v);
                 if sys_fifo.len() > SYS_FIFO_MAX_SAMPLES {
@@ -822,6 +834,9 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
                         sys_side_pcm.push((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
                     }
                     let _ = encode_and_write(enc, &sys_side_pcm, w);
+                }
+                if let Some(h) = live_handle.as_ref() {
+                    h.feed_sys(v);
                 }
             }
         }
