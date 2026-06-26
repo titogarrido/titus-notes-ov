@@ -2768,3 +2768,392 @@ button {
 .note-chat-md h1, .note-chat-md h2, .note-chat-md h3 {
   font-size: 13px; margin: 8px 0 4px; font-weight: 700;
 }
+
+/* ===========================================================================
+   Coluna de propriedades estilo Notion (data, projeto, participantes, tags)
+   Renderizada no topo da coluna lateral do editor (.note-side-panel).
+   =========================================================================== */
+.entity-props {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 16px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ep-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ep-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted, #6c757d);
+}
+
+.ep-label svg {
+  opacity: 0.8;
+}
+
+.ep-hint {
+  font-size: 11px;
+  color: var(--color-text-muted, #adb5bd);
+}
+
+.ep-date-input,
+.ep-select {
+  width: 100%;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: white;
+  color: #212529;
+}
+
+.ep-date-input:focus,
+.ep-select:focus {
+  outline: none;
+  border-color: #0066cc;
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+}
+
+.ep-meta {
+  font-size: 12px;
+  color: #495057;
+}
+
+/* ----- Campo de participantes (chips + seletor inline de busca/criação) ----- */
+.pf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pf-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.pf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 9px;
+  background: #eef0f3;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  max-width: 100%;
+}
+
+.pf-chip-name {
+  color: #212529;
+  font-size: 11px;
+  font-weight: 600;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-text-muted, #6c757d);
+  padding: 1px;
+  border-radius: 50%;
+}
+
+.pf-chip-x:hover {
+  color: #cf222e;
+  background: rgba(207, 34, 46, 0.1);
+}
+
+.pf-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  background: white;
+  border: 1px dashed var(--border-color-dark, #cbd0d6);
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--color-text-muted, #6c757d);
+}
+
+.pf-add-btn:hover {
+  border-color: #0066cc;
+  color: #0066cc;
+}
+
+.pf-dropdown {
+  width: 100%;
+  background: white;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg, 0 12px 32px rgba(0, 0, 0, 0.16));
+  padding: 8px;
+}
+
+.pf-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--color-text-muted, #6c757d);
+}
+
+.pf-search input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  color: #212529;
+}
+
+.pf-search-x {
+  display: inline-flex;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-text-muted, #6c757d);
+  padding: 1px;
+}
+
+.pf-list {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pf-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.pf-opt:hover {
+  background: var(--bg-sidebar, #f1f3f5);
+}
+
+.pf-opt:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.pf-opt-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #e7f3ff;
+  color: #0066cc;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.pf-opt-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pf-opt-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #212529;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-opt-role {
+  font-size: 10px;
+  color: var(--color-text-muted, #6c757d);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-empty {
+  padding: 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-text-muted, #6c757d);
+}
+
+/* ===========================================================================
+   Combobox com autocomplete (seleção única) — substitui <select> puro
+   =========================================================================== */
+.cb {
+  position: relative;
+  width: 100%;
+}
+
+.cb-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.cb-input {
+  width: 100%;
+  padding: 10px 56px 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md);
+  background: #ffffff;
+  color: var(--color-text-main);
+  font-size: 14px;
+  outline: none;
+  cursor: text;
+}
+
+.cb-input:focus {
+  border-color: #0066cc;
+  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.1);
+}
+
+/* Variante compacta (filtros / formulários densos) */
+.cb-sm .cb-input {
+  padding: 8px 48px 8px 10px;
+  font-size: 13px;
+}
+
+.cb-disabled .cb-input {
+  background: var(--bg-sidebar);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.cb-chevron {
+  position: absolute;
+  right: 10px;
+  color: var(--color-text-muted, #6c757d);
+  pointer-events: none;
+}
+
+.cb-clear {
+  position: absolute;
+  right: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #6c757d);
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.cb-clear:hover {
+  color: #cf222e;
+  background: rgba(207, 34, 46, 0.1);
+}
+
+.cb-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 70;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg, 0 12px 32px rgba(0, 0, 0, 0.16));
+  padding: 6px;
+}
+
+.cb-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.cb-opt.active {
+  background: var(--bg-sidebar, #f1f3f5);
+}
+
+.cb-opt.selected {
+  background: #e7f3ff;
+}
+
+.cb-opt-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.cb-opt-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-main, #212529);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-opt-sub {
+  font-size: 11px;
+  color: var(--color-text-muted, #6c757d);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-opt-check {
+  color: #0066cc;
+  flex-shrink: 0;
+}
+
+.cb-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-muted, #6c757d);
+}

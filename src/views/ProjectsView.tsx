@@ -18,6 +18,8 @@ import {
   X,
   Users,
   UserPlus,
+  Tag,
+  Clock,
 } from "lucide-react";
 import { RichTextEditor } from "../components/RichTextEditor";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -25,6 +27,7 @@ import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { ProjectChat } from "../components/ProjectChat";
 import { TagInput } from "../components/TagInput";
 import { TagChips } from "../components/TagChips";
+import { ParticipantsField } from "../components/ParticipantsField";
 import { generateSummaryWithOllama, noteToPlainText } from "../lib/ollama";
 import { allTags } from "../lib/tags";
 import type { ProjectStatus, AIProjectSummary } from "../types";
@@ -291,6 +294,34 @@ export const ProjectsView: React.FC = () => {
   const handleToggleTask = async (id: string) => {
     const t = db.tasks.find((x) => x.id === id);
     if (t) await updateTask({ ...t, completed: !t.completed });
+  };
+
+  // Vincula/desvincula uma pessoa do projeto a partir da coluna de propriedades.
+  const toggleProjectPerson = async (personId: string) => {
+    if (!selectedProject) return;
+    const has = selectedProject.peopleIds.includes(personId);
+    const next = has
+      ? selectedProject.peopleIds.filter((id) => id !== personId)
+      : [...selectedProject.peopleIds, personId];
+    await updateProject({ ...selectedProject, peopleIds: next });
+  };
+
+  // Cria uma pessoa na hora e já a vincula ao projeto (mesmo fluxo das notas).
+  const quickCreateProjectPerson = async (personName: string) => {
+    const trimmed = personName.trim();
+    if (!trimmed || !selectedProject) return;
+    const newId = await addPerson({
+      name: trimmed,
+      role: "",
+      email: "",
+      department: "",
+      managerId: null,
+      isContact: true,
+    });
+    await updateProject({
+      ...selectedProject,
+      peopleIds: [...selectedProject.peopleIds, newId],
+    });
   };
 
   const buildProjectSummaryPrompt = (
@@ -1151,15 +1182,6 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
       <div className="proj-content">
         {tab === "overview" && (
           <div className="proj-overview">
-            {/* Tags */}
-            <div style={{ marginBottom: 16, maxWidth: 420 }}>
-              <TagInput
-                tags={selectedProject.tags || []}
-                suggestions={allTags(db)}
-                onChange={(tags) => void updateProject({ ...selectedProject, tags })}
-                placeholder="Adicionar tags ao projeto…"
-              />
-            </div>
             {/* AI Summary card */}
             {(selectedProject.aiSummary || projectSummaryError || generatingProjectSummary) && (
               <div className="proj-ai-summary-card">
@@ -1266,6 +1288,40 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
               key={selectedProject.id}
               value={selectedProject.description}
               onChange={handleDescriptionChange}
+              propertiesPanel={
+                <div className="entity-props">
+                  <div className="ep-row">
+                    <div className="ep-label">
+                      <Users size={13} /> Integrantes
+                    </div>
+                    <ParticipantsField
+                      selectedIds={selectedProject.peopleIds}
+                      allPeople={db.people}
+                      onToggle={toggleProjectPerson}
+                      onQuickCreate={quickCreateProjectPerson}
+                    />
+                  </div>
+
+                  <div className="ep-row">
+                    <div className="ep-label">
+                      <Tag size={13} /> Tags
+                    </div>
+                    <TagInput
+                      tags={selectedProject.tags || []}
+                      suggestions={allTags(db)}
+                      onChange={(tags) => void updateProject({ ...selectedProject, tags })}
+                      placeholder="Adicionar tags…"
+                    />
+                  </div>
+
+                  <div className="ep-row">
+                    <div className="ep-label">
+                      <Clock size={13} /> Atualizado
+                    </div>
+                    <div className="ep-meta">{relativeTimeShort(selectedProject.updatedAt)}</div>
+                  </div>
+                </div>
+              }
             />
           </div>
         )}

@@ -16,6 +16,7 @@ import {
   Sparkles,
   Volume2,
   Check,
+  Tag,
 } from "lucide-react";
 
 import { RichTextEditor } from "../components/RichTextEditor";
@@ -23,6 +24,8 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { NoteChat } from "../components/NoteChat";
 import { TagInput } from "../components/TagInput";
 import { TagChips } from "../components/TagChips";
+import { ParticipantsField } from "../components/ParticipantsField";
+import { Combobox } from "../components/Combobox";
 import { allTags, normalizeTag } from "../lib/tags";
 
 // ---------- helpers ----------
@@ -135,10 +138,7 @@ export const NotesView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingNoteTab, pendingNoteQuery]);
 
-  const [participantSearch, setParticipantSearch] = useState("");
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const autocompleteRef = useRef<HTMLDivElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   // List filters
@@ -149,17 +149,6 @@ export const NotesView: React.FC = () => {
   const [savedNotice, setSavedNotice] = useState(false);
 
   const today = useMemo(() => new Date(), []);
-
-  // Close participant dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (autocompleteRef.current && !autocompleteRef.current.contains(e.target as Node)) {
-        setIsDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
 
   // Auto-focus + select-all in title when a freshly created note is opened
   useEffect(() => {
@@ -329,29 +318,21 @@ export const NotesView: React.FC = () => {
   // Cria uma pessoa "na hora" a partir do texto buscado e já a marca na nota,
   // sem sair da tela. Os demais campos ficam vazios para edição posterior em
   // Pessoas. Marca como contato (isContact) por ser um cadastro rápido.
-  const [creatingPerson, setCreatingPerson] = useState(false);
   const quickCreateParticipant = async (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || !selectedEntityId || creatingPerson) return;
-    setCreatingPerson(true);
-    try {
-      const newId = await addPerson({
-        name: trimmed,
-        role: "",
-        email: "",
-        department: "",
-        managerId: null,
-        isContact: true,
-      });
-      const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
-      const base = pendingFieldsRef.current?.fields.peopleIds ?? note?.peopleIds ?? [];
-      if (!base.includes(newId)) {
-        commitNoteFields({ peopleIds: [...base, newId] });
-      }
-      setParticipantSearch("");
-      setIsDropdownOpen(false);
-    } finally {
-      setCreatingPerson(false);
+    if (!trimmed || !selectedEntityId) return;
+    const newId = await addPerson({
+      name: trimmed,
+      role: "",
+      email: "",
+      department: "",
+      managerId: null,
+      isContact: true,
+    });
+    const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
+    const base = pendingFieldsRef.current?.fields.peopleIds ?? note?.peopleIds ?? [];
+    if (!base.includes(newId)) {
+      commitNoteFields({ peopleIds: [...base, newId] });
     }
   };
 
@@ -810,328 +791,6 @@ export const NotesView: React.FC = () => {
               </button>
             </div>
 
-            {/* Compact Properties Bar */}
-            <div
-              style={{
-                display: "flex",
-                gap: 12,
-                padding: "10px 24px",
-                backgroundColor: "#f8f9fa",
-                borderBottom: "1px solid var(--color-border)",
-                flexWrap: "wrap",
-                alignItems: "center",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <Calendar size={14} style={{ color: "var(--color-text-muted)" }} />
-                <input
-                  type="date"
-                  className="form-input"
-                  value={selectedNote.date}
-                  onChange={(e) => handleDateChange(e.target.value)}
-                  style={{ fontSize: 12, padding: "4px 8px", width: 140 }}
-                />
-                <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                  ({relativeDate(selectedNote.date, today)})
-                </span>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <FolderKanban size={14} style={{ color: "var(--color-text-muted)" }} />
-                <select
-                  className="form-select"
-                  value={selectedNote.projectId || ""}
-                  onChange={(e) => handleProjectChange(e.target.value)}
-                  style={{ fontSize: 12, padding: "4px 8px", width: 160 }}
-                >
-                  <option value="">Sem Projeto</option>
-                  {db.projects.map((proj) => (
-                    <option key={proj.id} value={proj.id}>
-                      {proj.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Participants */}
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
-                <Users size={14} style={{ color: "var(--color-text-muted)" }} />
-                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", flex: 1 }}>
-                  {selectedNote.peopleIds.map((pid) => {
-                    const person = db.people.find((p) => p.id === pid);
-                    if (!person) return null;
-                    return (
-                      <div
-                        key={pid}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 4,
-                          padding: "3px 8px",
-                          backgroundColor: "#e8eaed",
-                          borderRadius: 12,
-                          fontSize: 11,
-                          fontWeight: 500,
-                        }}
-                      >
-                        <span>{person.name}</span>
-                        <button
-                          onClick={() => togglePersonParticipant(pid)}
-                          title="Remover"
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            padding: 2,
-                            border: "none",
-                            background: "transparent",
-                            cursor: "pointer",
-                            color: "var(--color-text-muted)",
-                            borderRadius: "50%",
-                          }}
-                          onMouseEnter={(e) => {
-                            (e.currentTarget as HTMLElement).style.color = "#cf222e";
-                            (e.currentTarget as HTMLElement).style.backgroundColor = "rgba(207, 34, 46, 0.1)";
-                          }}
-                          onMouseLeave={(e) => {
-                            (e.currentTarget as HTMLElement).style.color = "var(--color-text-muted)";
-                            (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
-                          }}
-                        >
-                          <X size={10} />
-                        </button>
-                      </div>
-                    );
-                  })}
-
-                  <div ref={autocompleteRef} style={{ position: "relative" }}>
-                    <button
-                      onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                        padding: "3px 8px",
-                        backgroundColor: "#ffffff",
-                        border: "1px solid var(--border-color)",
-                        borderRadius: 12,
-                        fontSize: 11,
-                        cursor: "pointer",
-                        color: "var(--color-text-muted)",
-                      }}
-                      onMouseEnter={(e) => {
-                        (e.currentTarget as HTMLElement).style.borderColor = "var(--color-text-main)";
-                        (e.currentTarget as HTMLElement).style.color = "var(--color-text-main)";
-                      }}
-                      onMouseLeave={(e) => {
-                        (e.currentTarget as HTMLElement).style.borderColor = "var(--border-color)";
-                        (e.currentTarget as HTMLElement).style.color = "var(--color-text-muted)";
-                      }}
-                    >
-                      <Plus size={10} />
-                      <span>Adicionar</span>
-                    </button>
-
-                    {isDropdownOpen && (() => {
-                      const trimmedSearch = participantSearch.trim();
-                      const searchLower = trimmedSearch.toLowerCase();
-                      const filtered = db.people.filter((p) => {
-                        if (selectedNote.peopleIds.includes(p.id)) return false;
-                        if (!searchLower) return true;
-                        return (
-                          p.name.toLowerCase().includes(searchLower) ||
-                          p.role.toLowerCase().includes(searchLower)
-                        );
-                      });
-                      // Mostra "Criar" quando há texto digitado e nenhuma pessoa
-                      // (já cadastrada) tem exatamente esse nome.
-                      const hasExactMatch = db.people.some(
-                        (p) => p.name.toLowerCase() === searchLower,
-                      );
-                      const canQuickCreate = trimmedSearch.length > 0 && !hasExactMatch;
-
-                      return (
-                        <div
-                          style={{
-                            position: "absolute",
-                            top: "calc(100% + 4px)",
-                            left: 0,
-                            minWidth: 280,
-                            backgroundColor: "#ffffff",
-                            border: "1px solid var(--border-color)",
-                            borderRadius: "var(--border-radius-md)",
-                            boxShadow: "var(--shadow-lg)",
-                            zIndex: 50,
-                            padding: 8,
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 6,
-                              padding: "6px 8px",
-                              marginBottom: 6,
-                              border: "1px solid var(--border-color)",
-                              borderRadius: 6,
-                            }}
-                          >
-                            <Search size={12} style={{ color: "var(--color-text-muted)" }} />
-                            <input
-                              type="text"
-                              value={participantSearch}
-                              onChange={(e) => setParticipantSearch(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" && canQuickCreate) {
-                                  e.preventDefault();
-                                  void quickCreateParticipant(trimmedSearch);
-                                }
-                              }}
-                              placeholder="Buscar ou criar pessoa..."
-                              autoFocus
-                              style={{ border: "none", outline: "none", background: "transparent", fontSize: 12, flex: 1 }}
-                            />
-                            {participantSearch && (
-                              <button
-                                onClick={() => setParticipantSearch("")}
-                                style={{
-                                  display: "flex",
-                                  padding: 2,
-                                  border: "none",
-                                  background: "transparent",
-                                  cursor: "pointer",
-                                  color: "var(--color-text-muted)",
-                                }}
-                              >
-                                <X size={10} />
-                              </button>
-                            )}
-                          </div>
-                          <div style={{ maxHeight: 200, overflowY: "auto" }}>
-                            {filtered.length > 0 ? (
-                              filtered.map((p) => (
-                                <button
-                                  key={p.id}
-                                  onClick={() => {
-                                    togglePersonParticipant(p.id);
-                                    setParticipantSearch("");
-                                    setIsDropdownOpen(false);
-                                  }}
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 8,
-                                    width: "100%",
-                                    padding: "6px 8px",
-                                    borderRadius: 6,
-                                    border: "none",
-                                    background: "transparent",
-                                    cursor: "pointer",
-                                    textAlign: "left",
-                                    fontSize: 12,
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    (e.currentTarget as HTMLElement).style.backgroundColor = "var(--bg-sidebar)";
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
-                                  }}
-                                >
-                                  <div className="profile-avatar" style={{ width: 24, height: 24, fontSize: 9 }}>
-                                    {initialsOf(p.name)}
-                                  </div>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontWeight: 600, fontSize: 11 }}>{p.name}</div>
-                                    <div style={{ fontSize: 10, color: "var(--color-text-muted)" }}>{p.role}</div>
-                                  </div>
-                                </button>
-                              ))
-                            ) : (
-                              !canQuickCreate && (
-                                <div style={{ padding: 12, textAlign: "center", fontSize: 11, color: "var(--color-text-muted)" }}>
-                                  {trimmedSearch ? "Nenhuma pessoa encontrada" : "Digite para buscar ou criar"}
-                                </div>
-                              )
-                            )}
-
-                            {canQuickCreate && (
-                              <button
-                                onClick={() => void quickCreateParticipant(trimmedSearch)}
-                                disabled={creatingPerson}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 8,
-                                  width: "100%",
-                                  padding: "6px 8px",
-                                  marginTop: filtered.length > 0 ? 4 : 0,
-                                  borderRadius: 6,
-                                  border: "none",
-                                  background: "transparent",
-                                  cursor: creatingPerson ? "default" : "pointer",
-                                  textAlign: "left",
-                                  fontSize: 12,
-                                }}
-                                onMouseEnter={(e) => {
-                                  (e.currentTarget as HTMLElement).style.backgroundColor = "var(--bg-sidebar)";
-                                }}
-                                onMouseLeave={(e) => {
-                                  (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    width: 24,
-                                    height: 24,
-                                    borderRadius: "50%",
-                                    background: "#e7f3ff",
-                                    color: "#0066cc",
-                                    flexShrink: 0,
-                                  }}
-                                >
-                                  <Plus size={14} />
-                                </div>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ fontWeight: 600, fontSize: 11 }}>
-                                    {creatingPerson ? "Criando…" : `Criar “${trimmedSearch}”`}
-                                  </div>
-                                  <div style={{ fontSize: 10, color: "var(--color-text-muted)" }}>
-                                    Nova pessoa adicionada à nota
-                                  </div>
-                                </div>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Tags */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 24px",
-                backgroundColor: "#f8f9fa",
-                borderBottom: "1px solid var(--color-border)",
-              }}
-            >
-              <div style={{ width: 320, maxWidth: "100%" }}>
-                <TagInput
-                  tags={selectedNote.tags || []}
-                  suggestions={allTags(db)}
-                  onChange={(tags) => commitNoteFields({ tags })}
-                  placeholder="Adicionar tags…"
-                />
-              </div>
-            </div>
 
             {/* Editor */}
             <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
@@ -1141,6 +800,61 @@ export const NotesView: React.FC = () => {
                 onChange={handleContentChange}
                 noteId={selectedNote.id}
                 noteTitle={selectedNote.title}
+                propertiesPanel={
+                  <div className="entity-props">
+                    <div className="ep-row">
+                      <div className="ep-label">
+                        <Calendar size={13} /> Data
+                      </div>
+                      <input
+                        type="date"
+                        className="ep-date-input"
+                        value={selectedNote.date}
+                        onChange={(e) => handleDateChange(e.target.value)}
+                      />
+                      <div className="ep-hint">{relativeDate(selectedNote.date, today)}</div>
+                    </div>
+
+                    <div className="ep-row">
+                      <div className="ep-label">
+                        <FolderKanban size={13} /> Projeto
+                      </div>
+                      <Combobox
+                        value={selectedNote.projectId || ""}
+                        options={db.projects.map((proj) => ({ id: proj.id, label: proj.name }))}
+                        onChange={(id) => handleProjectChange(id)}
+                        emptyLabel="Sem projeto"
+                        placeholder="Buscar projeto…"
+                        noResultsText="Nenhum projeto encontrado"
+                        compact
+                      />
+                    </div>
+
+                    <div className="ep-row">
+                      <div className="ep-label">
+                        <Users size={13} /> Participantes
+                      </div>
+                      <ParticipantsField
+                        selectedIds={selectedNote.peopleIds}
+                        allPeople={db.people}
+                        onToggle={togglePersonParticipant}
+                        onQuickCreate={quickCreateParticipant}
+                      />
+                    </div>
+
+                    <div className="ep-row">
+                      <div className="ep-label">
+                        <Tag size={13} /> Tags
+                      </div>
+                      <TagInput
+                        tags={selectedNote.tags || []}
+                        suggestions={allTags(db)}
+                        onChange={(tags) => commitNoteFields({ tags })}
+                        placeholder="Adicionar tags…"
+                      />
+                    </div>
+                  </div>
+                }
                 initialTab={(pendingNoteTab as
                   | "content"
                   | "transcript"

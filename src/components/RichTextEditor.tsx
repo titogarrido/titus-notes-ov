@@ -82,6 +82,9 @@ interface RichTextEditorProps {
   initialTab?: "content" | "transcript" | "summaries" | "actions";
   /** Termo buscado — rola/realça até a ocorrência na aba de destino. */
   initialQuery?: string;
+  /** Bloco de propriedades (data, projeto, participantes, tags) renderizado no
+   *  topo da coluna lateral — estilo Notion. */
+  propertiesPanel?: React.ReactNode;
 }
 
 // ----- Mini player de áudio (usa asset protocol — streaming, sem IPC pesado) -----
@@ -1164,6 +1167,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   noteId = "",
   initialTab,
   initialQuery,
+  propertiesPanel,
 }) => {
   const { db, setCurrentView, setSelectedEntityId, liveTranscribingNoteId } = useApp();
   const isReadyRef = useRef(false);
@@ -1460,8 +1464,11 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     }
   };
 
-  // Mostra side panel só na aba de conteúdo (e quando habilitado pelo pai)
-  const showPanelHere = sidePanel && showSidePanel && tab === "content";
+  // A coluna lateral aparece na aba de conteúdo. Com painel de propriedades, ela
+  // fica sempre visível (as propriedades não somem quando o usuário esconde o
+  // contexto); sem ele, segue o toggle de contexto como antes.
+  const showPanelHere =
+    sidePanel && tab === "content" && (!!propertiesPanel || showSidePanel);
   // Usado pra detectar contexto de "tem painel" na hora de mostrar o botão de toggle
   const hasContextPanel = sidePanel && (summariesEnabled || transcriptEnabled || !!noteId);
 
@@ -1738,6 +1745,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             onOpenTask={handleOpenTask}
             onOpenProject={handleOpenProject}
             onJumpToHeading={handleJumpToHeading}
+            propertiesSlot={propertiesPanel}
+            showContext={showSidePanel}
           />
         )}
       </div>

@@ -97,6 +97,42 @@ ${noteText}
 Gere o sumário agora, somente em Markdown, sem comentários adicionais.`;
 }
 
+/**
+ * Prompt de sumário guiado por instruções livres do usuário (sem template).
+ * Usa as mesmas fontes (anotações + transcrição) e devolve Markdown.
+ */
+export function buildCustomSummaryPrompt(
+  noteTitle: string,
+  noteText: string,
+  language: string,
+  transcript: string | undefined,
+  instructions: string,
+): string {
+  const lang = languageLabel(language);
+  const transcriptBlock = transcript && transcript.trim()
+    ? `\n\nTranscrição completa da reunião (use como fonte primária):\n"""\n${transcript.trim()}\n"""`
+    : "";
+
+  return `Você é um assistente que analisa reuniões e responde seguindo as instruções do usuário.
+Idioma da resposta: ${lang}.
+Formate a resposta em Markdown, usando cabeçalhos "##" e bullet points quando fizer sentido.
+Baseie-se SOMENTE nas anotações e na transcrição fornecidas — não invente fatos. Mantenha nomes próprios e datas.
+
+Instruções do usuário (siga-as à risca):
+"""
+${instructions.trim()}
+"""
+
+Título da nota: ${noteTitle || "(sem título)"}
+
+Anotações da reunião:
+"""
+${noteText}
+"""${transcriptBlock}
+
+Gere a resposta agora, somente em Markdown, sem comentários adicionais.`;
+}
+
 // --- Extração de itens de ação (action items) -------------------------------
 
 export interface ExtractedActionItem {
@@ -127,6 +163,7 @@ export function buildActionItemsPrompt(
   peopleNames: string[],
   me: SelfIdentity,
   selfTranscript?: string,
+  extraInstructions?: string,
 ): string {
   const lang = languageLabel(language);
   const transcriptBlock = transcript && transcript.trim()
@@ -149,6 +186,11 @@ export function buildActionItemsPrompt(
   const selfBlock = selfTranscript && selfTranscript.trim()
     ? `\n\nTrechos ditos por VOCÊ (capturados pelo seu microfone — tudo aqui foi falado por você):\n"""\n${selfTranscript.trim()}\n"""`
     : "";
+  // Instruções livres do usuário para focar/filtrar a extração (sem quebrar o
+  // contrato de saída JSON).
+  const extraBlock = extraInstructions && extraInstructions.trim()
+    ? `\n\nInstruções adicionais do usuário (priorize-as ao decidir o que extrair, mantendo o formato de saída):\n"""\n${extraInstructions.trim()}\n"""`
+    : "";
 
   return `Você extrai itens de ação (tarefas / próximos passos) de reuniões.
 Idioma dos títulos: ${lang}.
@@ -163,7 +205,7 @@ Cada elemento tem exatamente estas chaves:
   - "due": string ou null — data de vencimento no formato "yyyy-mm-dd", apenas se houver prazo claro; senão null.
   - "owner": "me", "other" ou null. Use "me" quando a tarefa for SUA: atribuída a você por um dos seus nomes (${namesList}), OU assumida por você em primeira pessoa ("eu vou", "deixa comigo", "fico de"), especialmente se o compromisso aparecer nos trechos ditos por VOCÊ. Se a transcrição estiver rotulada com "(Você)" e "(Outros)", trate as falas marcadas "(Você)" como suas e as "(Outros)" como de terceiros. Use "other" quando for claramente de outra pessoa. Use null se não der pra saber.
 
-Inclua somente compromissos reais e acionáveis. Não invente tarefas. Se não houver nenhuma, responda [].
+Inclua somente compromissos reais e acionáveis. Não invente tarefas. Se não houver nenhuma, responda [].${extraBlock}
 
 Título da nota: ${noteTitle || "(sem título)"}
 

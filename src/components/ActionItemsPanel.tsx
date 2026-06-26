@@ -9,6 +9,7 @@ import {
   Plus,
   ArrowRight,
   UserCheck,
+  Wand2,
 } from "lucide-react";
 import { OllamaSettings, Summary } from "../types";
 import {
@@ -64,6 +65,9 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
   const [creating, setCreating] = useState(false);
   const [createdCount, setCreatedCount] = useState<number | null>(null);
   const [onlyMine, setOnlyMine] = useState(false);
+  // Instruções livres para guiar/filtrar a extração (opcional)
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customInstructions, setCustomInstructions] = useState("");
 
   // Identidade do usuário (perfil) — base para separar "meus" itens.
   const me: SelfIdentity = useMemo(
@@ -127,6 +131,7 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
         db.people.map((p) => p.name),
         me,
         selfTranscript,
+        customInstructions,
       );
       const extracted = await extractActionItems(settings, prompt);
       const drafts: DraftItem[] = extracted.map((e, i) => {
@@ -233,17 +238,103 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
             {projectId ? " ao projeto desta nota." : "."}
           </p>
         </div>
-        <button
-          className="btn-primary"
-          disabled={extracting || !hasSource}
-          onClick={handleExtract}
-          style={{ display: "flex", alignItems: "center", gap: "6px" }}
-          title={!hasSource ? "A nota não tem conteúdo, transcrição ou sumário." : ""}
-        >
-          {extracting ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
-          <span>{extracting ? "Extraindo..." : items ? "Extrair de novo" : "Extrair com IA"}</span>
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={extracting}
+            onClick={() => setCustomOpen((v) => !v)}
+            style={{ display: "flex", alignItems: "center", gap: "6px" }}
+            title="Adicionar instruções livres para guiar a extração"
+          >
+            <Wand2 size={14} style={{ color: "#8250df" }} />
+            <span>Prompt manual</span>
+            {customInstructions.trim() && !customOpen && (
+              <span
+                title="Instruções definidas"
+                style={{ width: 7, height: 7, borderRadius: "50%", background: "#8250df" }}
+              />
+            )}
+          </button>
+          <button
+            className="btn-primary"
+            disabled={extracting || !hasSource}
+            onClick={handleExtract}
+            style={{ display: "flex", alignItems: "center", gap: "6px" }}
+            title={!hasSource ? "A nota não tem conteúdo, transcrição ou sumário." : ""}
+          >
+            {extracting ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
+            <span>{extracting ? "Extraindo..." : items ? "Extrair de novo" : "Extrair com IA"}</span>
+          </button>
+        </div>
       </div>
+
+      {customOpen && (
+        <div
+          style={{
+            border: "1px solid var(--border-color)",
+            borderRadius: "10px",
+            padding: "12px 14px",
+            marginBottom: "16px",
+            background: "#faf7ff",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px", fontSize: "13px", fontWeight: 600 }}>
+            <Wand2 size={14} style={{ color: "#8250df" }} /> Instruções para a extração
+          </div>
+          <textarea
+            value={customInstructions}
+            onChange={(e) => setCustomInstructions(e.target.value)}
+            autoFocus
+            placeholder="Ex.: Extraia só as tarefas de infraestrutura. Ignore ideias não confirmadas. Atribua a mim o que eu disse que faria."
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setCustomOpen(false);
+              } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                if (hasSource && !extracting) void handleExtract();
+              }
+            }}
+            style={{
+              width: "100%",
+              minHeight: "80px",
+              padding: "10px 12px",
+              border: "1px solid var(--border-color)",
+              borderRadius: "8px",
+              fontSize: "13px",
+              lineHeight: 1.5,
+              resize: "vertical",
+              outline: "none",
+              background: "white",
+              color: "#212529",
+              boxSizing: "border-box",
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginTop: "8px" }}>
+            <span style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
+              Refina a extração sem mudar o formato das tarefas. ⌘↵ para extrair.
+            </span>
+            {customInstructions.trim() && (
+              <button
+                type="button"
+                onClick={() => setCustomInstructions("")}
+                disabled={extracting}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "var(--color-text-muted)",
+                  fontSize: "12px",
+                  cursor: "pointer",
+                  textDecoration: "underline",
+                }}
+              >
+                Limpar
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {error && (
         <div

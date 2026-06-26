@@ -4,6 +4,7 @@ import { CheckSquare, Plus, Trash2, Check, Search, X, AlertTriangle } from "luci
 import { Task } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { TagInput } from "../components/TagInput";
+import { Combobox } from "../components/Combobox";
 import { allTags } from "../lib/tags";
 
 type EditField = "title" | "date" | "person" | "project";
@@ -240,32 +241,30 @@ export const TasksView: React.FC = () => {
         />
 
         {/* Project Selector */}
-        <select
-          className="quick-task-select"
-          value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
-        >
-          <option value="">Sem Projeto</option>
-          {db.projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
+        <div style={{ width: 150, flexShrink: 0 }}>
+          <Combobox
+            value={projectId}
+            options={db.projects.map((p) => ({ id: p.id, label: p.name }))}
+            onChange={setProjectId}
+            emptyLabel="Sem Projeto"
+            placeholder="Projeto…"
+            noResultsText="Nenhum projeto"
+            compact
+          />
+        </div>
 
         {/* Person Selector */}
-        <select
-          className="quick-task-select"
-          value={personId}
-          onChange={(e) => setPersonId(e.target.value)}
-        >
-          <option value="">Sem Responsável</option>
-          {db.people.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
+        <div style={{ width: 150, flexShrink: 0 }}>
+          <Combobox
+            value={personId}
+            options={db.people.map((p) => ({ id: p.id, label: p.name, sub: p.role || undefined }))}
+            onChange={setPersonId}
+            emptyLabel="Sem Responsável"
+            placeholder="Responsável…"
+            noResultsText="Nenhuma pessoa"
+            compact
+          />
+        </div>
 
         <button type="submit" className="btn-primary" style={{ display: "flex", alignItems: "center", gap: "4px" }}>
           <Plus size={14} />

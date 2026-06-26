@@ -4,6 +4,7 @@ import { Users, Plus, Edit3, Trash2, Mail, ArrowLeft, FolderKanban, FileText, Ch
 import { Person, AIPersonProfile } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
+import { Combobox, ComboboxOption } from "../components/Combobox";
 import { generateSummaryWithOllama } from "../lib/ollama";
 
 export const PeopleView: React.FC = () => {
@@ -248,6 +249,47 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
   // Filter out the current person from potential managers to prevent self-management cycles
   const potentialManagers = db.people.filter((p) => p.id !== selectedEntityId);
 
+  // Opções de empresa para o combobox (com autocomplete).
+  const companyOptions: ComboboxOption[] = useMemo(
+    () =>
+      (db.companies || []).map((c) => ({
+        id: c.id,
+        label: c.name,
+        sub: c.sector || c.subtitle || "",
+      })),
+    [db.companies],
+  );
+
+  // Gestores possíveis, filtrados pela empresa selecionada no formulário. Sem
+  // empresa selecionada, mostra todas as pessoas (exceto a própria).
+  const managerOptions: ComboboxOption[] = useMemo(() => {
+    const base = potentialManagers.filter(
+      (p) => !companyId || p.companyId === companyId,
+    );
+    // Garante que o gestor já selecionado apareça mesmo que seja de outra
+    // empresa (dados legados), para o combobox conseguir exibi-lo em vez de
+    // ficar em branco mantendo um valor oculto.
+    if (managerId && !base.some((p) => p.id === managerId)) {
+      const current = potentialManagers.find((p) => p.id === managerId);
+      if (current) base.unshift(current);
+    }
+    return base.map((p) => ({
+      id: p.id,
+      label: p.name,
+      sub: p.role || "Sem cargo",
+    }));
+  }, [potentialManagers, companyId, managerId]);
+
+  // Ao trocar a empresa, limpa o gestor se ele não pertencer à nova empresa
+  // (mantém a coerência: o gestor deve ser alguém da mesma empresa).
+  const handleCompanyChange = (newCompanyId: string) => {
+    setCompanyId(newCompanyId);
+    if (newCompanyId && managerId) {
+      const mgr = db.people.find((p) => p.id === managerId);
+      if (!mgr || mgr.companyId !== newCompanyId) setManagerId("");
+    }
+  };
+
   // ---- UX helpers ----
   const avatarPalette = [
     { bg: "#dbeafe", fg: "#1d4ed8" },
@@ -298,6 +340,11 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
         new Set(db.people.map((p) => p.department).filter(Boolean)),
       ).sort(),
     [db.people],
+  );
+
+  const departmentOptions: ComboboxOption[] = useMemo(
+    () => departments.map((d) => ({ id: d, label: d })),
+    [departments],
   );
 
   const filteredPeople = useMemo(() => {
@@ -402,35 +449,31 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
               </div>
 
               {(db.companies || []).length > 0 && (
-                <select
-                  className="form-select"
-                  value={filterCompanyId}
-                  onChange={(e) => setFilterCompanyId(e.target.value)}
-                  style={{ height: 34, flex: "0 0 auto" }}
-                >
-                  <option value="">Todas as empresas</option>
-                  {(db.companies || []).map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                <div style={{ width: 190, flex: "0 0 auto" }}>
+                  <Combobox
+                    value={filterCompanyId}
+                    options={companyOptions}
+                    onChange={setFilterCompanyId}
+                    emptyLabel="Todas as empresas"
+                    placeholder="Filtrar empresa…"
+                    noResultsText="Nenhuma empresa encontrada"
+                    compact
+                  />
+                </div>
               )}
 
               {departments.length > 0 && (
-                <select
-                  className="form-select"
-                  value={filterDepartment}
-                  onChange={(e) => setFilterDepartment(e.target.value)}
-                  style={{ height: 34, flex: "0 0 auto" }}
-                >
-                  <option value="">Todos os departamentos</option>
-                  {departments.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
+                <div style={{ width: 190, flex: "0 0 auto" }}>
+                  <Combobox
+                    value={filterDepartment}
+                    options={departmentOptions}
+                    onChange={setFilterDepartment}
+                    emptyLabel="Todos os departamentos"
+                    placeholder="Filtrar departamento…"
+                    noResultsText="Nenhum departamento encontrado"
+                    compact
+                  />
+                </div>
               )}
 
               <select
@@ -718,18 +761,19 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
 
                   <div className="form-group">
                     <label>Empresa</label>
-                    <select
-                      className="form-select"
+                    <Combobox
                       value={companyId}
-                      onChange={(e) => setCompanyId(e.target.value)}
-                    >
-                      <option value="">Sem empresa</option>
-                      {(db.companies || []).map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
+                      options={companyOptions}
+                      onChange={handleCompanyChange}
+                      emptyLabel="Sem empresa"
+                      placeholder={
+                        companyOptions.length
+                          ? "Buscar empresa…"
+                          : "Nenhuma empresa cadastrada"
+                      }
+                      disabled={companyOptions.length === 0}
+                      noResultsText="Nenhuma empresa encontrada"
+                    />
                   </div>
 
                   <div className="form-group">
@@ -745,18 +789,27 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
 
                   <div className="form-group">
                     <label>Gestor Direto</label>
-                    <select
-                      className="form-select"
+                    <Combobox
                       value={managerId}
-                      onChange={(e) => setManagerId(e.target.value)}
-                    >
-                      <option value="">Nenhum (Cargo Executivo / Sem gestor)</option>
-                      {potentialManagers.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.role || "Sem cargo"})
-                        </option>
-                      ))}
-                    </select>
+                      options={managerOptions}
+                      onChange={setManagerId}
+                      emptyLabel="Nenhum (Cargo Executivo / Sem gestor)"
+                      placeholder={
+                        companyId
+                          ? "Buscar pessoa desta empresa…"
+                          : "Buscar pessoa…"
+                      }
+                      noResultsText={
+                        companyId
+                          ? "Nenhuma pessoa nesta empresa"
+                          : "Nenhuma pessoa encontrada"
+                      }
+                    />
+                    {companyId && (
+                      <p style={{ margin: "6px 0 0", fontSize: 11, color: "var(--color-text-muted)" }}>
+                        Mostrando apenas pessoas da empresa selecionada.
+                      </p>
+                    )}
                   </div>
 
                   <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--color-text-muted)", marginTop: 16, marginBottom: 8, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>

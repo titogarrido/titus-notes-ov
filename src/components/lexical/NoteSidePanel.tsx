@@ -37,6 +37,13 @@ interface NoteSidePanelProps {
 
   // Scroll to heading
   onJumpToHeading: (index: number) => void;
+
+  /** Bloco de propriedades (data, projeto, participantes, tags) renderizado no
+   *  topo da coluna — estilo Notion. Sempre visível enquanto a coluna existe. */
+  propertiesSlot?: React.ReactNode;
+  /** Mostra as seções de contexto (índice, backlinks, menções). O toggle do
+   *  editor controla isto; as propriedades permanecem visíveis. Padrão: true. */
+  showContext?: boolean;
 }
 
 const formatRelative = (iso: string): string => {
@@ -74,6 +81,8 @@ export const NoteSidePanel: React.FC<NoteSidePanelProps> = ({
   onOpenTask,
   onOpenProject,
   onJumpToHeading,
+  propertiesSlot,
+  showContext = true,
 }) => {
   // ----- backlinks -----
   // Notas que mencionam esta (por @-mention do título ou referência textual)
@@ -98,6 +107,10 @@ export const NoteSidePanel: React.FC<NoteSidePanelProps> = ({
 
   return (
     <div className="note-side-panel">
+      {propertiesSlot}
+
+      {!showContext ? null : (
+      <>
       {/* TOC */}
       <section className="nsp-section">
         <header className="nsp-h">
@@ -225,6 +238,8 @@ export const NoteSidePanel: React.FC<NoteSidePanelProps> = ({
           </div>
         )}
       </section>
+      </>
+      )}
     </div>
   );
 };
