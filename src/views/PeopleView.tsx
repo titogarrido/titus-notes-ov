@@ -30,7 +30,7 @@ export const PeopleView: React.FC = () => {
   const [filterCompanyId, setFilterCompanyId] = useState<string>("");
   const [filterDepartment, setFilterDepartment] = useState<string>("");
   const [onlyContacts, setOnlyContacts] = useState(false);
-  const [sortMode, setSortMode] = useState<"nome" | "notas" | "tarefas">("nome");
+  const [sortMode, setSortMode] = useState<"nome" | "notas" | "tarefas" | "recente">("nome");
 
   // Form states
   const [name, setName] = useState("");
@@ -365,6 +365,13 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
     const noteCount = (id: string) => db.notes.filter((n) => n.peopleIds.includes(id)).length;
     const openTaskCount = (id: string) =>
       db.tasks.filter((t) => t.personId === id && !t.completed).length;
+    // O id é gerado como `person-<Date.now()>`, então o timestamp final indica
+    // quando a pessoa foi cadastrada. Ids fora desse padrão (ex.: importações)
+    // caem para 0 e vão ao fim.
+    const createdAt = (id: string) => {
+      const m = /-(\d{10,})$/.exec(id);
+      return m ? Number(m[1]) : 0;
+    };
 
     return [...list].sort((a, b) => {
       if (sortMode === "notas") {
@@ -372,6 +379,9 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
         if (d !== 0) return d;
       } else if (sortMode === "tarefas") {
         const d = openTaskCount(b.id) - openTaskCount(a.id);
+        if (d !== 0) return d;
+      } else if (sortMode === "recente") {
+        const d = createdAt(b.id) - createdAt(a.id);
         if (d !== 0) return d;
       }
       return a.name.localeCompare(b.name, "pt-BR");
@@ -484,6 +494,7 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
                 title="Ordenar pessoas"
               >
                 <option value="nome">Ordenar: nome (A–Z)</option>
+                <option value="recente">Ordenar: adicionadas recentemente</option>
                 <option value="notas">Ordenar: mais notas</option>
                 <option value="tarefas">Ordenar: mais tarefas abertas</option>
               </select>
