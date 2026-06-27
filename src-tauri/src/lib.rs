@@ -1,3 +1,4 @@
+mod codex_auth;
 mod mic_monitor;
 mod recorder;
 pub mod transcriber;
@@ -1434,7 +1435,12 @@ pub fn run() {
             transcriber::delete_transcription_model,
             transcriber::transcribe_audio,
             transcriber::cancel_transcription,
-            transcriber::transcription_status
+            transcriber::transcription_status,
+            codex_auth::codex_login_start,
+            codex_auth::codex_login_complete,
+            codex_auth::codex_auth_status,
+            codex_auth::codex_logout,
+            codex_auth::codex_generate
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");

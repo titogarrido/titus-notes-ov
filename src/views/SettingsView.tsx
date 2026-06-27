@@ -27,12 +27,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { save as dialogSave, open as dialogOpen } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { check as checkUpdate, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import {
   OllamaSettings,
+  AiProvider,
   SummaryTemplate,
   UserProfile,
   S3Credentials,
@@ -44,10 +45,18 @@ import {
   AudioCleanupResult,
   TranscriptionModelStatus,
 } from "../types";
-import { pingOllama } from "../lib/ollama";
+import { pingProvider } from "../lib/ai";
+import {
+  codexLoginStart,
+  codexLoginComplete,
+  codexAuthStatus,
+  codexLogout,
+  CodexStatus,
+} from "../lib/codex";
 import { ImportReport } from "../lib/hyprnoteImport";
 
 const DEFAULT_SETTINGS: OllamaSettings = {
+  provider: "ollama",
   url: "http://localhost:11434",
   model: "llama3.2",
   language: "pt-BR",
@@ -111,17 +120,27 @@ export const SettingsView: React.FC = () => {
     setTimeout(() => setProfileSaved(false), 1500);
   };
 
-  // Form local controlado para Ollama
+  // Form local controlado para os provedores de IA
+  const [provider, setProvider] = useState<AiProvider>(settings.provider ?? "ollama");
   const [url, setUrl] = useState(settings.url);
   const [model, setModel] = useState(settings.model);
+  const [openaiApiKey, setOpenaiApiKey] = useState(settings.openaiApiKey || "");
+  const [openaiModel, setOpenaiModel] = useState(settings.openaiModel || "");
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState(settings.openaiBaseUrl || "");
+  const [codexModel, setCodexModel] = useState(settings.codexModel || "");
   const [language, setLanguage] = useState(settings.language || "pt-BR");
   const [savedHint, setSavedHint] = useState(false);
 
   useEffect(() => {
+    setProvider(settings.provider ?? "ollama");
     setUrl(settings.url);
     setModel(settings.model);
+    setOpenaiApiKey(settings.openaiApiKey || "");
+    setOpenaiModel(settings.openaiModel || "");
+    setOpenaiBaseUrl(settings.openaiBaseUrl || "");
+    setCodexModel(settings.codexModel || "");
     setLanguage(settings.language || "pt-BR");
-  }, [settings.url, settings.model, settings.language]);
+  }, [settings]);
 
   // Conexão / modelos disponíveis
   const [connStatus, setConnStatus] = useState<
@@ -131,10 +150,76 @@ export const SettingsView: React.FC = () => {
     | { kind: "error"; message: string }
   >({ kind: "idle" });
 
+  // Settings atuais do formulário (montado a partir do estado local) — usado ao
+  // salvar e ao testar a conexão do provedor selecionado.
+  const draftSettings = (): OllamaSettings => ({
+    ...settings,
+    provider,
+    url: url.trim(),
+    model: model.trim(),
+    openaiApiKey: openaiApiKey.trim(),
+    openaiModel: openaiModel.trim(),
+    openaiBaseUrl: openaiBaseUrl.trim(),
+    codexModel: codexModel.trim(),
+    language,
+  });
+
   const handleSaveSettings = async () => {
-    await updateSettings({ url: url.trim(), model: model.trim(), language });
+    await updateSettings(draftSettings());
     setSavedHint(true);
     setTimeout(() => setSavedHint(false), 1500);
+  };
+
+  // Ao trocar de provedor, descarta o resultado do teste anterior (era de outro provedor).
+  useEffect(() => {
+    setConnStatus({ kind: "idle" });
+  }, [provider]);
+
+  // ---- Login Codex (OAuth "Entrar com ChatGPT") ----
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const [codexLogin, setCodexLogin] = useState<{ verificationUrl: string; userCode: string } | null>(null);
+  const [codexBusy, setCodexBusy] = useState(false);
+  const [codexError, setCodexError] = useState<string | null>(null);
+
+  const refreshCodexStatus = () =>
+    codexAuthStatus()
+      .then(setCodexStatus)
+      .catch(() => setCodexStatus({ loggedIn: false }));
+
+  useEffect(() => {
+    if (provider === "codex") refreshCodexStatus();
+  }, [provider]);
+
+  const handleCodexLogin = async () => {
+    setCodexError(null);
+    setCodexBusy(true);
+    try {
+      const start = await codexLoginStart();
+      setCodexLogin({ verificationUrl: start.verificationUrl, userCode: start.userCode });
+      try {
+        await openUrl(start.verificationUrl);
+      } catch {
+        /* o usuário pode abrir o link manualmente */
+      }
+      const status = await codexLoginComplete(start);
+      setCodexStatus(status);
+      setCodexLogin(null);
+    } catch (e: any) {
+      setCodexError(e?.message || String(e));
+      setCodexLogin(null);
+    } finally {
+      setCodexBusy(false);
+    }
+  };
+
+  const handleCodexLogout = async () => {
+    setCodexError(null);
+    try {
+      await codexLogout();
+    } catch (e: any) {
+      setCodexError(e?.message || String(e));
+    }
+    refreshCodexStatus();
   };
 
   // ---- Transcrição local (Parakeet v3) ----
@@ -219,7 +304,7 @@ export const SettingsView: React.FC = () => {
   const handleTestConnection = async () => {
     setConnStatus({ kind: "loading" });
     try {
-      const models = await pingOllama({ url: url.trim(), model, language });
+      const models = await pingProvider(draftSettings());
       setConnStatus({ kind: "ok", models });
     } catch (e: any) {
       setConnStatus({ kind: "error", message: e?.message || String(e) });
@@ -836,7 +921,7 @@ export const SettingsView: React.FC = () => {
     {
       label: "Inteligência Artificial",
       items: [
-        { id: "ollama", label: "Ollama" },
+        { id: "ai", label: "Configuração de AIs" },
         { id: "transcription", label: "Transcrição local" },
         { id: "templates", label: "Templates de sumário" },
       ],
@@ -1024,74 +1109,233 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Ollama */}
-        <div id="section-ollama" className="settings-card">
+        {/* Configuração de AIs */}
+        <div id="section-ai" className="settings-card">
           <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "12px" }}>
             <Sparkles size={16} />
-            <span>Integração Ollama</span>
+            <span>Configuração de AIs</span>
           </h2>
-          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "16px" }}>
-            Configure o servidor Ollama local. O sumário das notas é gerado usando o modelo abaixo.
+          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "14px" }}>
+            Escolha o provedor de IA usado para gerar sumários, itens de ação e o chat das notas.
           </p>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
-              URL
-              <input
-                type="text"
-                className="form-input"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="http://localhost:11434"
-              />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
-              Modelo
-              <input
-                type="text"
-                className="form-input"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="llama3.2"
-                list="ollama-models"
-              />
-              {connStatus.kind === "ok" && connStatus.models.length > 0 && (
-                <datalist id="ollama-models">
-                  {connStatus.models.map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-              )}
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
-              Idioma das gerações
-              <select
-                className="form-select"
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-              >
-                <option value="pt-BR">Português (Brasil)</option>
-                <option value="pt">Português</option>
-                <option value="en">English</option>
-                <option value="es">Español</option>
-                <option value="fr">Français</option>
-              </select>
-            </label>
+          {/* Seletor de provedor */}
+          <div style={{ display: "inline-flex", border: "1px solid var(--border-color)", borderRadius: 8, overflow: "hidden", marginBottom: 16, flexWrap: "wrap" }}>
+            {([
+              { id: "ollama", label: "Ollama (local)" },
+              { id: "openai", label: "OpenAI API" },
+              { id: "codex", label: "Codex (ChatGPT)" },
+            ] as const).map((opt, i) => {
+              const active = provider === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setProvider(opt.id)}
+                  style={{
+                    padding: "7px 14px",
+                    border: "none",
+                    borderRight: i < 2 ? "1px solid var(--border-color)" : "none",
+                    background: active ? "var(--color-text-main)" : "var(--bg-card)",
+                    color: active ? "#fff" : "var(--color-text-main)",
+                    fontSize: 12,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
           </div>
+
+          {/* Campos do Ollama */}
+          {provider === "ollama" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+                URL
+                <input
+                  type="text"
+                  className="form-input"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="http://localhost:11434"
+                />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+                Modelo
+                <input
+                  type="text"
+                  className="form-input"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="llama3.2"
+                  list="ai-models"
+                />
+              </label>
+            </div>
+          )}
+
+          {/* Campos da OpenAI API */}
+          {provider === "openai" && (
+            <>
+              <p style={{ fontSize: "11px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "10px" }}>
+                A API da OpenAI é cobrada à parte (centavos por sumário) e <strong>não</strong> usa sua
+                assinatura do ChatGPT. Crie uma chave em <code>platform.openai.com/api-keys</code>.
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+                  Chave da API
+                  <input
+                    type="password"
+                    className="form-input"
+                    value={openaiApiKey}
+                    onChange={(e) => setOpenaiApiKey(e.target.value)}
+                    placeholder="sk-..."
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </label>
+                <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+                  Modelo
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={openaiModel}
+                    onChange={(e) => setOpenaiModel(e.target.value)}
+                    placeholder="gpt-4o-mini"
+                    list="ai-models"
+                  />
+                </label>
+              </div>
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)", marginTop: "12px" }}>
+                Base URL (opcional — proxies/APIs compatíveis)
+                <input
+                  type="text"
+                  className="form-input"
+                  value={openaiBaseUrl}
+                  onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                  spellCheck={false}
+                  style={{ fontFamily: "monospace", fontSize: "12px" }}
+                />
+              </label>
+            </>
+          )}
+
+          {/* Codex via "Entrar com ChatGPT" (OAuth device-code) */}
+          {provider === "codex" && (
+            <>
+              <p style={{ fontSize: "11px", color: "var(--color-text-muted)", marginTop: 0, marginBottom: "10px" }}>
+                Usa sua assinatura do ChatGPT (Plus/Pro) sem custo de API, via login OAuth — sem CLI.
+                É uma integração <strong>não-oficial</strong> (reaproveita o cliente do Codex e um endpoint
+                interno do ChatGPT) e pode parar de funcionar se a OpenAI mudar o fluxo.
+              </p>
+
+              {codexStatus?.loggedIn ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: 12 }}>
+                  <span style={{ fontSize: "12px", color: "#1f8e3d", display: "flex", alignItems: "center", gap: "4px" }}>
+                    <CheckCircle2 size={14} /> Conectado ao ChatGPT
+                    {codexStatus.accountId ? ` · conta ${codexStatus.accountId}` : ""}
+                  </span>
+                  <button className="btn-secondary" onClick={handleCodexLogout}>
+                    Sair
+                  </button>
+                </div>
+              ) : codexLogin ? (
+                <div style={{ border: "1px solid var(--border-color)", borderRadius: 8, padding: "12px", marginBottom: 12, fontSize: "12px" }}>
+                  <div style={{ marginBottom: 8 }}>
+                    Abra{" "}
+                    <a
+                      href={codexLogin.verificationUrl}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        void openUrl(codexLogin.verificationUrl);
+                      }}
+                      style={{ cursor: "pointer" }}
+                    >
+                      {codexLogin.verificationUrl}
+                    </a>{" "}
+                    e digite o código:
+                  </div>
+                  <div style={{ fontSize: "20px", fontWeight: 700, letterSpacing: "2px", fontFamily: "monospace" }}>
+                    {codexLogin.userCode}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--color-text-muted)", marginTop: 8 }}>
+                    <Loader2 size={14} className="spin" /> Aguardando autorização no navegador…
+                  </div>
+                </div>
+              ) : (
+                <button
+                  className="btn-primary"
+                  onClick={handleCodexLogin}
+                  disabled={codexBusy}
+                  style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: 12 }}
+                >
+                  {codexBusy ? <Loader2 size={14} className="spin" /> : null}
+                  <span>Entrar com ChatGPT</span>
+                </button>
+              )}
+
+              {codexError && (
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "#cf222e", marginBottom: 12 }}>
+                  <AlertCircle size={14} /> {codexError}
+                </div>
+              )}
+
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)", maxWidth: 360 }}>
+                Modelo (opcional)
+                <input
+                  type="text"
+                  className="form-input"
+                  value={codexModel}
+                  onChange={(e) => setCodexModel(e.target.value)}
+                  placeholder="gpt-5"
+                />
+              </label>
+            </>
+          )}
+
+          {/* Datalist compartilhada com os modelos retornados pelo teste de conexão */}
+          {connStatus.kind === "ok" && connStatus.models.length > 0 && provider !== "codex" && (
+            <datalist id="ai-models">
+              {connStatus.models.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          )}
+
+          {/* Idioma das gerações (compartilhado) */}
+          <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)", marginTop: "12px", maxWidth: 360 }}>
+            Idioma das gerações
+            <select
+              className="form-select"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+            >
+              <option value="pt-BR">Português (Brasil)</option>
+              <option value="pt">Português</option>
+              <option value="en">English</option>
+              <option value="es">Español</option>
+              <option value="fr">Français</option>
+            </select>
+          </label>
 
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "14px", flexWrap: "wrap" }}>
             <button className="btn-primary" onClick={handleSaveSettings}>
               Salvar
             </button>
-            <button className="btn-secondary" onClick={handleTestConnection}>
-              {connStatus.kind === "loading" ? "Testando..." : "Testar conexão"}
-            </button>
+            {provider !== "codex" && (
+              <button className="btn-secondary" onClick={handleTestConnection}>
+                {connStatus.kind === "loading" ? "Testando..." : "Testar conexão"}
+              </button>
+            )}
             {savedHint && (
               <span style={{ fontSize: "12px", color: "#1f8e3d", display: "flex", alignItems: "center", gap: "4px" }}>
                 <CheckCircle2 size={14} /> Salvo
               </span>
             )}
-            {connStatus.kind === "ok" && (
+            {connStatus.kind === "ok" && provider !== "codex" && (
               <span style={{ fontSize: "12px", color: "#1f8e3d", display: "flex", alignItems: "center", gap: "4px" }}>
                 <CheckCircle2 size={14} /> Conectado · {connStatus.models.length} modelo(s)
               </span>

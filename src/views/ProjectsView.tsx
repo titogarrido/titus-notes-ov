@@ -28,7 +28,8 @@ import { ProjectChat } from "../components/ProjectChat";
 import { TagInput } from "../components/TagInput";
 import { TagChips } from "../components/TagChips";
 import { ParticipantsField } from "../components/ParticipantsField";
-import { generateSummaryWithOllama, noteToPlainText } from "../lib/ollama";
+import { noteToPlainText } from "../lib/ollama";
+import { generateSummary, activeModel, aiProvider, activeAiLabel, PROVIDER_LABELS } from "../lib/ai";
 import { allTags } from "../lib/tags";
 import type { ProjectStatus, AIProjectSummary } from "../types";
 
@@ -371,6 +372,7 @@ export const ProjectsView: React.FC = () => {
 
 Idioma da resposta: ${lang}.
 Formate em Markdown, usando cabeçalhos "##" para cada seção e bullet points ("- ") quando fizer sentido.
+Não use tabelas em Markdown — prefira listas com bullet points.
 Seja factual, objetivo, e atribua datas às afirmações quando possível.
 
 IMPORTANTE: NÃO use tabelas em Markdown (nada de "|" ou linhas com "---"). Use apenas parágrafos curtos e listas com bullets.
@@ -492,11 +494,12 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
         tasks: tasksForProject,
         people: peopleForProject,
       });
-      const content = await generateSummaryWithOllama(settings, prompt);
+      const content = await generateSummary(settings, prompt);
       const aiSummary: AIProjectSummary = {
         content,
         generatedAt: new Date().toISOString(),
-        model: settings.model || "llama3.2",
+        model: activeModel(settings),
+        provider: aiProvider(settings),
         sourceNoteCount: notesForProject.length,
         sourceSummaryCount: summaryBlocks.length,
         sourceTaskCount: tasksForProject.length,
@@ -1196,6 +1199,11 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 700 }}>
                     <Sparkles size={14} style={{ color: "#8250df" }} />
                     <span>Resumo IA do projeto</span>
+                    {db.settings && (
+                      <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-muted)" }}>
+                        · {activeAiLabel(db.settings)}
+                      </span>
+                    )}
                     {selectedProject.aiSummary && (
                       <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-muted)" }}>
                         · {selectedProject.aiSummary.sourceSummaryCount} sumário
@@ -1277,7 +1285,13 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
                           timeStyle: "short",
                         })}
                       </span>
-                      <span>modelo: {selectedProject.aiSummary.model}</span>
+                      <span>
+                        modelo:{" "}
+                        {selectedProject.aiSummary.provider
+                          ? `${PROVIDER_LABELS[selectedProject.aiSummary.provider]} · `
+                          : ""}
+                        {selectedProject.aiSummary.model}
+                      </span>
                     </div>
                   </>
                 )}

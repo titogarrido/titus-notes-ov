@@ -1,4 +1,15 @@
 import { OllamaSettings, SummaryTemplate } from "../types";
+import {
+  ChatMessage,
+  GenerateOptions,
+  withTimeout,
+  isAbort,
+  DEFAULT_TIMEOUT_MS,
+  PING_TIMEOUT_MS,
+} from "./aiCore";
+
+// Re-exporta os tipos compartilhados para manter os imports existentes funcionando.
+export type { ChatMessage, GenerateOptions } from "./aiCore";
 
 const LANGUAGE_LABELS: Record<string, string> = {
   "pt-BR": "Português do Brasil",
@@ -81,6 +92,7 @@ export function buildPrompt(
   return `Você é um assistente que gera sumários de reuniões.
 Idioma da resposta: ${lang}.
 Formate a resposta em Markdown, usando cabeçalhos "##" para cada seção e bullet points quando fizer sentido.
+Não use tabelas em Markdown — prefira listas com bullet points.
 Seja objetivo, mantenha nomes próprios e datas.
 
 Template "${template.name}" — ${template.description || "sumário de reunião"}.
@@ -116,6 +128,7 @@ export function buildCustomSummaryPrompt(
   return `Você é um assistente que analisa reuniões e responde seguindo as instruções do usuário.
 Idioma da resposta: ${lang}.
 Formate a resposta em Markdown, usando cabeçalhos "##" e bullet points quando fizer sentido.
+Não use tabelas em Markdown — prefira listas com bullet points.
 Baseie-se SOMENTE nas anotações e na transcrição fornecidas — não invente fatos. Mantenha nomes próprios e datas.
 
 Instruções do usuário (siga-as à risca):
@@ -256,40 +269,6 @@ export function parseActionItemsJson(raw: string): ExtractedActionItem[] {
   return out;
 }
 
-export async function extractActionItems(
-  settings: OllamaSettings,
-  prompt: string,
-  opts: GenerateOptions = {},
-): Promise<ExtractedActionItem[]> {
-  const raw = await generateSummaryWithOllama(settings, prompt, opts);
-  return parseActionItemsJson(raw);
-}
-
-export interface GenerateOptions {
-  signal?: AbortSignal;
-  timeoutMs?: number;
-}
-
-const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
-const PING_TIMEOUT_MS = 10 * 1000;
-
-function withTimeout(timeoutMs: number, external?: AbortSignal): {
-  signal: AbortSignal;
-  cancel: () => void;
-} {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(new DOMException("Timeout", "AbortError")), timeoutMs);
-  if (external) {
-    if (external.aborted) ctrl.abort(external.reason);
-    else external.addEventListener("abort", () => ctrl.abort(external.reason), { once: true });
-  }
-  return { signal: ctrl.signal, cancel: () => clearTimeout(t) };
-}
-
-function isAbort(err: unknown): boolean {
-  return !!err && typeof err === "object" && (err as { name?: string }).name === "AbortError";
-}
-
 export async function generateSummaryWithOllama(
   settings: OllamaSettings,
   prompt: string,
@@ -319,11 +298,6 @@ export async function generateSummaryWithOllama(
   } finally {
     cancel();
   }
-}
-
-export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
 }
 
 export async function chatWithOllama(

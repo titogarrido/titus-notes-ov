@@ -14,10 +14,10 @@ import {
 import { OllamaSettings, Summary } from "../types";
 import {
   buildActionItemsPrompt,
-  extractActionItems,
   noteToPlainText,
   SelfIdentity,
 } from "../lib/ollama";
+import { extractActionItems } from "../lib/ai";
 import { useApp } from "../context/AppContext";
 
 interface ActionItemsPanelProps {

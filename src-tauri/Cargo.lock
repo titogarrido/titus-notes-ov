@@ -5446,6 +5446,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 name = "titus-notes"
 version = "2.1.2"
 dependencies = [
+ "base64 0.22.1",
  "cpal",
  "futures-util",
  "mp3lame-encoder",
@@ -5464,6 +5465,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "transcribe-rs",
+ "uuid",
  "zip 2.4.2",
 ]
 

@@ -17,9 +17,9 @@ import { MarkdownRenderer } from "./MarkdownRenderer";
 import {
   buildPrompt,
   buildCustomSummaryPrompt,
-  generateSummaryWithOllama,
   noteToPlainText,
 } from "../lib/ollama";
+import { generateSummary, activeModel, aiProvider, activeAiLabel, PROVIDER_LABELS } from "../lib/ai";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 interface SummariesPanelProps {
@@ -93,14 +93,15 @@ export const SummariesPanel: React.FC<SummariesPanelProps> = ({
         settings.language || "pt-BR",
         transcript,
       );
-      const content = await generateSummaryWithOllama(settings, prompt);
+      const content = await generateSummary(settings, prompt);
       const summary: Summary = {
         id: `sum-${Date.now()}`,
         templateId: tpl.id,
         templateName: tpl.name,
         content,
         generatedAt: new Date().toISOString(),
-        model: settings.model || "",
+        model: activeModel(settings),
+        provider: aiProvider(settings),
       };
       await onAddSummary(summary);
     } catch (e: any) {
@@ -127,14 +128,15 @@ export const SummariesPanel: React.FC<SummariesPanelProps> = ({
         transcript,
         instructions,
       );
-      const content = await generateSummaryWithOllama(settings, prompt);
+      const content = await generateSummary(settings, prompt);
       const summary: Summary = {
         id: `sum-${Date.now()}`,
         templateId: null,
         templateName: "Prompt personalizado",
         content,
         generatedAt: new Date().toISOString(),
-        model: settings.model || "",
+        model: activeModel(settings),
+        provider: aiProvider(settings),
       };
       await onAddSummary(summary);
       setCustomOpen(false);
@@ -172,6 +174,9 @@ export const SummariesPanel: React.FC<SummariesPanelProps> = ({
           </h3>
           <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: "var(--color-text-muted)" }}>
             {summaries.length} sumário(s) salvo(s) para esta nota.
+          </p>
+          <p style={{ margin: "2px 0 0 0", fontSize: "11px", color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: "4px" }}>
+            <Sparkles size={11} /> Gerando com: <strong>{activeAiLabel(settings)}</strong>
           </p>
         </div>
 
@@ -407,7 +412,9 @@ export const SummariesPanel: React.FC<SummariesPanelProps> = ({
                   <div style={{ fontSize: "13px", fontWeight: 600 }}>{s.templateName}</div>
                   <div style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
                     {new Date(s.generatedAt).toLocaleString("pt-BR")}{" "}
-                    {s.model ? `· ${s.model}` : ""}
+                    {s.model
+                      ? `· ${s.provider ? `${PROVIDER_LABELS[s.provider]} · ` : ""}${s.model}`
+                      : ""}
                     {s.editedAt && (
                       <span title={`Editado em ${new Date(s.editedAt).toLocaleString("pt-BR")}`}>
                         {" "}· editado

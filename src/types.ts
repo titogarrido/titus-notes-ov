@@ -15,6 +15,8 @@ export interface AIPersonProfile {
   content: string;
   generatedAt: string;
   model: string;
+  /** Provedor usado na geração (ausente em perfis antigos = Ollama). */
+  provider?: AiProvider;
   sourceNoteCount: number;
   sourceSummaryCount: number;
 }
@@ -61,6 +63,8 @@ export interface AIProjectSummary {
   content: string;
   generatedAt: string;
   model: string;
+  /** Provedor usado na geração (ausente em sumários antigos = Ollama). */
+  provider?: AiProvider;
   sourceNoteCount: number;
   sourceSummaryCount: number;
   sourceTaskCount: number;
@@ -74,6 +78,8 @@ export interface Summary {
   content: string;
   generatedAt: string;
   model: string;
+  /** Provedor usado na geração (ausente em sumários antigos = Ollama). */
+  provider?: AiProvider;
   /** Definido quando o usuário editou manualmente o conteúdo gerado pela IA */
   editedAt?: string;
 }
@@ -100,11 +106,30 @@ export interface Note {
   tags?: string[];
 }
 
-export interface OllamaSettings {
+export type AiProvider = "ollama" | "openai" | "codex";
+
+export interface AiSettings {
+  /** Provedor de IA ativo. Ausente = "ollama" (compatibilidade com bancos antigos). */
+  provider?: AiProvider;
+  /** Idioma das gerações (sumários, itens de ação, chat). */
+  language: string;
+
+  // --- Ollama (local) ---
   url: string;
   model: string;
-  language: string;
+
+  // --- OpenAI API (cobrança própria; chave de platform.openai.com) ---
+  openaiApiKey?: string;
+  openaiModel?: string;
+  /** Base da API OpenAI (default https://api.openai.com/v1). Aceita proxies/compatíveis. */
+  openaiBaseUrl?: string;
+
+  // --- Codex CLI (usa a assinatura do ChatGPT via `codex login`) ---
+  codexModel?: string;
 }
+
+/** @deprecated Use {@link AiSettings}. Mantido para compatibilidade dos imports existentes. */
+export type OllamaSettings = AiSettings;
 
 export interface SummaryTemplate {
   id: string;

@@ -5,7 +5,7 @@ import { Person, AIPersonProfile } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { Combobox, ComboboxOption } from "../components/Combobox";
-import { generateSummaryWithOllama } from "../lib/ollama";
+import { generateSummary, activeModel, aiProvider, activeAiLabel, PROVIDER_LABELS } from "../lib/ai";
 
 export const PeopleView: React.FC = () => {
   const {
@@ -130,7 +130,7 @@ export const PeopleView: React.FC = () => {
     return `Você é um analista de relacionamento profissional. Sua tarefa é gerar um PERFIL DESCRITIVO de uma pessoa, com base em sumários de reuniões em que ela participou.
 
 Idioma da resposta: ${lang}.
-Formate em Markdown, usando cabeçalhos "##" para cada seção e bullet points ("- ") quando fizer sentido. Seja factual, evite suposições e atribua afirmações às fontes quando possível (ex.: "Em 12/03, demonstrou interesse por X").
+Formate em Markdown, usando cabeçalhos "##" para cada seção e bullet points ("- ") quando fizer sentido. Não use tabelas em Markdown — prefira listas com bullet points. Seja factual, evite suposições e atribua afirmações às fontes quando possível (ex.: "Em 12/03, demonstrou interesse por X").
 
 IMPORTANTE: NÃO use tabelas em Markdown (nada de "|" ou linhas com "---"). Use apenas parágrafos e listas com bullets.
 
@@ -192,11 +192,12 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
     setGeneratingProfile(true);
     try {
       const prompt = buildProfilePrompt(selectedPerson, sources);
-      const content = await generateSummaryWithOllama(settings, prompt);
+      const content = await generateSummary(settings, prompt);
       const aiProfile: AIPersonProfile = {
         content,
         generatedAt: new Date().toISOString(),
-        model: settings.model || "llama3.2",
+        model: activeModel(settings),
+        provider: aiProvider(settings),
         sourceNoteCount: notesForPerson.length,
         sourceSummaryCount: sources.length,
       };
@@ -1013,6 +1014,11 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
                       <h3 className="profile-section-title" style={{ display: "flex", alignItems: "center", gap: 6, margin: 0 }}>
                         <Sparkles size={14} style={{ color: "#8250df" }} />
                         <span>Perfil IA</span>
+                        {db.settings && (
+                          <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-muted)" }}>
+                            · {activeAiLabel(db.settings)}
+                          </span>
+                        )}
                         {selectedPerson.aiProfile && (
                           <span style={{ fontSize: 10, fontWeight: 500, color: "var(--color-text-muted)" }}>
                             · {selectedPerson.aiProfile.sourceSummaryCount} sumário{selectedPerson.aiProfile.sourceSummaryCount === 1 ? "" : "s"} de {selectedPerson.aiProfile.sourceNoteCount} nota{selectedPerson.aiProfile.sourceNoteCount === 1 ? "" : "s"}
@@ -1106,7 +1112,13 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
                           <span title={new Date(selectedPerson.aiProfile.generatedAt).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}>
                             Gerado {relativeFromNow(selectedPerson.aiProfile.generatedAt)}
                           </span>
-                          <span>modelo: {selectedPerson.aiProfile.model}</span>
+                          <span>
+                            modelo:{" "}
+                            {selectedPerson.aiProfile.provider
+                              ? `${PROVIDER_LABELS[selectedPerson.aiProfile.provider]} · `
+                              : ""}
+                            {selectedPerson.aiProfile.model}
+                          </span>
                         </div>
                       </div>
                     ) : !generatingProfile && !profileError ? (

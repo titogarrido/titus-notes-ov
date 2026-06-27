@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MessageCircle, X, Send, Loader2, Sparkles, Trash2, FileText } from "lucide-react";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { ChatMessage, chatWithOllama, noteToPlainText } from "../lib/ollama";
+import { ChatMessage, noteToPlainText } from "../lib/ollama";
+import { chat, activeAiLabel } from "../lib/ai";
 import { Note, Project, Task, Person, OllamaSettings } from "../types";
 
 interface ProjectChatProps {
@@ -211,7 +212,7 @@ export const ProjectChat: React.FC<ProjectChatProps> = ({
         { role: "system", content: systemPrompt },
         ...nextHistory.map((m) => ({ role: m.role, content: m.content })),
       ];
-      const reply = await chatWithOllama(settings, apiMessages, { signal: ac.signal });
+      const reply = await chat(settings, apiMessages, { signal: ac.signal });
       setMessages((cur) => [...cur, { role: "assistant", content: reply }]);
     } catch (err: any) {
       if (ac.signal.aborted) return;
@@ -334,7 +335,12 @@ export const ProjectChat: React.FC<ProjectChatProps> = ({
                   <Sparkles size={14} />
                 </div>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>Perguntar à IA</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    Perguntar à IA
+                    <span style={{ fontSize: 10, fontWeight: 500, color: "var(--color-text-muted)" }}>
+                      · {activeAiLabel(settings)}
+                    </span>
+                  </div>
                   <div
                     style={{
                       fontSize: 11,
