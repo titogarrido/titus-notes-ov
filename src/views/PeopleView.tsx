@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
-import { Users, Plus, Edit3, Trash2, Mail, ArrowLeft, FolderKanban, FileText, CheckCircle2, Sparkles, RefreshCw, AlertTriangle, Search, X, Star, Building2, ListChecks } from "lucide-react";
+import { Users, Plus, Edit3, Trash2, Mail, ArrowLeft, FolderKanban, FileText, CheckCircle2, Sparkles, RefreshCw, AlertTriangle, Search, X, Star, Building2, ListChecks, Link as LinkIcon } from "lucide-react";
 import { Person, AIPersonProfile } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
@@ -39,6 +39,7 @@ export const PeopleView: React.FC = () => {
   const [department, setDepartment] = useState("");
   const [managerId, setManagerId] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [linkedinUrl, setLinkedinUrl] = useState("");
   const [companyId, setCompanyId] = useState("");
   const [isContact, setIsContact] = useState(false);
 
@@ -49,6 +50,7 @@ export const PeopleView: React.FC = () => {
     setDepartment("");
     setManagerId("");
     setAvatarUrl("");
+    setLinkedinUrl("");
     setCompanyId("");
     setIsContact(false);
     setIsCreating(true);
@@ -62,6 +64,7 @@ export const PeopleView: React.FC = () => {
     setDepartment(person.department);
     setManagerId(person.managerId || "");
     setAvatarUrl(person.avatarUrl || "");
+    setLinkedinUrl(person.linkedinUrl || "");
     setCompanyId(person.companyId || "");
     setIsContact(!!person.isContact);
     setIsEditing(true);
@@ -79,6 +82,7 @@ export const PeopleView: React.FC = () => {
       department: department.trim(),
       managerId: managerId || null,
       avatarUrl: avatarUrl.trim() || undefined,
+      linkedinUrl: linkedinUrl.trim() || undefined,
       companyId: companyId || null,
       isContact,
     };
@@ -756,6 +760,17 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
                     />
                   </div>
 
+                  <div className="form-group">
+                    <label>LinkedIn (Opcional)</label>
+                    <input
+                      type="url"
+                      className="form-input"
+                      value={linkedinUrl}
+                      onChange={(e) => setLinkedinUrl(e.target.value)}
+                      placeholder="ex. https://linkedin.com/in/anderson-silva"
+                    />
+                  </div>
+
                   <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--color-text-muted)", marginTop: 16, marginBottom: 8, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
                     <Building2 size={11} style={{ display: "inline", marginRight: 4, verticalAlign: "middle" }} />
                     Organização
@@ -896,6 +911,18 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
                         <a href={`mailto:${selectedPerson.email}`} className="profile-detail-email">
                           <Mail size={12} style={{ display: "inline", marginRight: "4px", verticalAlign: "middle" }} />
                           {selectedPerson.email}
+                        </a>
+                      )}
+                      {selectedPerson.linkedinUrl && (
+                        <a
+                          href={selectedPerson.linkedinUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="profile-detail-email"
+                          style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                        >
+                          <LinkIcon size={12} style={{ verticalAlign: "middle" }} />
+                          LinkedIn
                         </a>
                       )}
                     </div>

@@ -6,6 +6,7 @@ export interface Person {
   department: string;
   managerId: string | null;
   avatarUrl?: string;
+  linkedinUrl?: string;
   companyId?: string | null;
   isContact?: boolean;
   aiProfile?: AIPersonProfile;
