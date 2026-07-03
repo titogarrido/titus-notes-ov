@@ -28,10 +28,11 @@ import { ProjectChat } from "../components/ProjectChat";
 import { TagInput } from "../components/TagInput";
 import { TagChips } from "../components/TagChips";
 import { ParticipantsField } from "../components/ParticipantsField";
+import { MentionTitleInput } from "../components/MentionTitleInput";
 import { noteToPlainText } from "../lib/ollama";
 import { generateSummary, activeModel, aiProvider, activeAiLabel, PROVIDER_LABELS } from "../lib/ai";
 import { allTags } from "../lib/tags";
-import type { ProjectStatus, AIProjectSummary } from "../types";
+import type { ProjectStatus, AIProjectSummary, Person } from "../types";
 
 // --------- helpers ---------
 
@@ -137,6 +138,7 @@ export const ProjectsView: React.FC = () => {
     setCurrentView,
     addNote,
     addPerson,
+    addTask,
     updateTask,
   } = useApp();
 
@@ -290,6 +292,20 @@ export const ProjectsView: React.FC = () => {
       peopleIds: [],
     });
     goToNote(id);
+  };
+
+  const handleAddTaskInProject = async (title: string, peopleIds: string[]) => {
+    if (!selectedProject) return;
+    const t = title.trim();
+    if (!t) return;
+    await addTask({
+      title: t,
+      completed: false,
+      dueDate: new Date().toISOString().split("T")[0],
+      projectId: selectedProject.id,
+      personId: null,
+      peopleIds: peopleIds.length ? peopleIds : undefined,
+    });
   };
 
   const handleToggleTask = async (id: string) => {
@@ -1356,6 +1372,7 @@ Se alguma seção não tiver evidências suficientes, escreva "Sem evidências s
             onToggle={handleToggleTask}
             onOpenTask={goToTask}
             onOpenPerson={goToPerson}
+            onAddTask={handleAddTaskInProject}
           />
         )}
 
@@ -1446,16 +1463,35 @@ const ProjectNotesTab: React.FC<{
 };
 
 const ProjectTasksTab: React.FC<{
-  open: { id: string; title: string; dueDate: string; personId: string | null }[];
-  done: { id: string; title: string; dueDate: string; personId: string | null }[];
-  allPeople: { id: string; name: string; avatarUrl?: string }[];
+  open: { id: string; title: string; dueDate: string; personId: string | null; peopleIds?: string[] }[];
+  done: { id: string; title: string; dueDate: string; personId: string | null; peopleIds?: string[] }[];
+  allPeople: Person[];
   onToggle: (id: string) => void;
   onOpenTask: (id: string) => void;
   onOpenPerson: (id: string) => void;
-}> = ({ open, done, allPeople, onToggle, onOpenTask, onOpenPerson }) => {
-  const renderTask = (t: { id: string; title: string; dueDate: string; personId: string | null }, completed: boolean) => {
+  onAddTask: (title: string, peopleIds: string[]) => void | Promise<void>;
+}> = ({ open, done, allPeople, onToggle, onOpenTask, onOpenPerson, onAddTask }) => {
+  const [newTitle, setNewTitle] = useState("");
+  const [newPeopleIds, setNewPeopleIds] = useState<string[]>([]);
+  const initialsOf = (name: string) =>
+    name.split(" ").filter(Boolean).slice(0, 2).map((n) => n[0]?.toUpperCase() || "").join("");
+  const submitNew = async () => {
+    const t = newTitle.trim();
+    if (!t) return;
+    setNewTitle("");
+    const ids = newPeopleIds;
+    setNewPeopleIds([]);
+    await onAddTask(t, ids);
+  };
+  const renderTask = (
+    t: { id: string; title: string; dueDate: string; personId: string | null; peopleIds?: string[] },
+    completed: boolean,
+  ) => {
     const person = t.personId ? allPeople.find((p) => p.id === t.personId) : null;
-    const initials = person ? person.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase() : "";
+    const initials = person ? initialsOf(person.name) : "";
+    const related = (t.peopleIds || [])
+      .map((id) => allPeople.find((p) => p.id === id))
+      .filter((p): p is Person => !!p);
     return (
       <div key={t.id} className={`proj-task-row ${completed ? "completed" : ""}`}>
         <button
@@ -1472,6 +1508,23 @@ const ProjectTasksTab: React.FC<{
           {t.title}
         </span>
         <div className="proj-task-meta">
+          {related.map((p) => (
+            <button
+              key={p.id}
+              className="proj-task-person"
+              title={`@${p.name}${p.role ? " · " + p.role : ""}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenPerson(p.id);
+              }}
+            >
+              {p.avatarUrl ? (
+                <img src={p.avatarUrl} alt={p.name} />
+              ) : (
+                <span>{initialsOf(p.name)}</span>
+              )}
+            </button>
+          ))}
           {person && (
             <button
               className="proj-task-person"
@@ -1514,9 +1567,87 @@ const ProjectTasksTab: React.FC<{
         </>
       )}
 
-      <button className="proj-add-row" onClick={() => alert("Adicione a tarefa em Tarefas")}>
-        <Plus size={14} /> Adicionar tarefa
-      </button>
+      {newPeopleIds.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", margin: "8px 0 0" }}>
+          <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>Relacionadas:</span>
+          {newPeopleIds.map((id) => {
+            const p = allPeople.find((x) => x.id === id);
+            if (!p) return null;
+            return (
+              <span
+                key={id}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "3px 6px 3px 4px",
+                  borderRadius: 12,
+                  background: "#eef4ff",
+                  color: "#1d4ed8",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                <span
+                  style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: "50%",
+                    background: "#dbe6ff",
+                    fontSize: 9,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {initialsOf(p.name)}
+                </span>
+                {p.name}
+                <button
+                  type="button"
+                  onClick={() => setNewPeopleIds((prev) => prev.filter((x) => x !== id))}
+                  style={{ display: "flex", border: "none", background: "transparent", cursor: "pointer", color: "inherit", padding: 0 }}
+                  title="Remover"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      <form
+        className="proj-add-row"
+        style={{ display: "flex", alignItems: "center", gap: 8 }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submitNew();
+        }}
+      >
+        <Plus size={14} />
+        <MentionTitleInput
+          value={newTitle}
+          onChange={setNewTitle}
+          people={allPeople}
+          excludeIds={newPeopleIds}
+          onMention={(id) => setNewPeopleIds((prev) => (prev.includes(id) ? prev : [...prev, id]))}
+          onSubmit={() => void submitNew()}
+          placeholder="Adicionar tarefa neste projeto… (use @ para relacionar pessoas)"
+          style={{
+            border: "none",
+            outline: "none",
+            background: "transparent",
+            fontSize: "13px",
+            color: "inherit",
+          }}
+        />
+        {newTitle.trim() && (
+          <button type="submit" className="btn-primary" style={{ padding: "4px 12px", fontSize: 12 }}>
+            Adicionar
+          </button>
+        )}
+      </form>
     </div>
   );
 };

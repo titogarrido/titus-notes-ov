@@ -5,7 +5,16 @@ import { Task } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { TagInput } from "../components/TagInput";
 import { Combobox } from "../components/Combobox";
+import { MentionTitleInput } from "../components/MentionTitleInput";
 import { allTags } from "../lib/tags";
+
+const initialsOf = (name: string) =>
+  name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0]?.toUpperCase() || "")
+    .join("");
 
 type EditField = "title" | "date" | "person" | "project";
 interface InlineEdit {
@@ -39,9 +48,10 @@ export const TasksView: React.FC = () => {
   const [dueDate, setDueDate] = useState(new Date().toISOString().split("T")[0]);
   const [projectId, setProjectId] = useState<string>("");
   const [personId, setPersonId] = useState<string>("");
+  const [newPeopleIds, setNewPeopleIds] = useState<string[]>([]);
   
-  // Filter state
-  const [filter, setFilter] = useState<"all" | "pending" | "completed">("all");
+  // Filter state — a tela principal mostra apenas pendentes; concluídas só na aba própria.
+  const [filter, setFilter] = useState<"pending" | "completed">("pending");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   // Inline edit state
@@ -119,13 +129,28 @@ export const TasksView: React.FC = () => {
       dueDate,
       projectId: projectId || null,
       personId: personId || null,
+      peopleIds: newPeopleIds.length ? newPeopleIds : undefined,
     });
 
     // Reset fields e mantém o foco para cadastrar várias em sequência
     setTitle("");
     setProjectId("");
     setPersonId("");
+    setNewPeopleIds([]);
     titleInputRef.current?.focus();
+  };
+
+  // Relaciona/remove uma pessoa numa tarefa já existente (via @menção ou chip).
+  const addPersonToTask = async (task: Task, personId: string) => {
+    const current = task.peopleIds || [];
+    if (current.includes(personId)) return;
+    await updateTask({ ...task, peopleIds: [...current, personId] });
+  };
+
+  const removePersonFromTask = async (task: Task, personId: string) => {
+    const current = task.peopleIds || [];
+    if (!current.includes(personId)) return;
+    await updateTask({ ...task, peopleIds: current.filter((id) => id !== personId) });
   };
 
   const handleToggle = async (task: Task) => {
@@ -152,14 +177,8 @@ export const TasksView: React.FC = () => {
 
   // Filter tasks
   const filteredTasks = db.tasks
-    .filter((t) => {
-      if (filter === "pending") return !t.completed;
-      if (filter === "completed") return t.completed;
-      return true;
-    })
+    .filter((t) => (filter === "completed" ? t.completed : !t.completed))
     .sort((a, b) => {
-      // Pendentes antes de concluídas
-      if (a.completed !== b.completed) return a.completed ? 1 : -1;
       if (a.completed) {
         // Concluídas: mais recentes primeiro
         return (b.dueDate || "").localeCompare(a.dueDate || "");
@@ -196,13 +215,6 @@ export const TasksView: React.FC = () => {
         {/* Tab Filters */}
         <div style={{ display: "flex", gap: "6px" }}>
           <button
-            className={`btn-secondary ${filter === "all" ? "btn-primary" : ""}`}
-            style={{ padding: "6px 12px", border: filter === "all" ? "none" : "1px solid var(--border-color)" }}
-            onClick={() => setFilter("all")}
-          >
-            Todas ({db.tasks.length})
-          </button>
-          <button
             className={`btn-secondary ${filter === "pending" ? "btn-primary" : ""}`}
             style={{ padding: "6px 12px", border: filter === "pending" ? "none" : "1px solid var(--border-color)" }}
             onClick={() => setFilter("pending")}
@@ -221,16 +233,18 @@ export const TasksView: React.FC = () => {
 
       {/* Quick Task Bar Form */}
       <form onSubmit={handleAddTask} className="quick-task-bar">
-        <input
-          ref={titleInputRef}
-          type="text"
+        <MentionTitleInput
+          inputRef={titleInputRef}
           className="quick-task-input"
-          placeholder="Nova tarefa..."
+          placeholder="Nova tarefa... (use @ para relacionar pessoas)"
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          required
+          onChange={setTitle}
+          people={db.people}
+          excludeIds={newPeopleIds}
+          onMention={(id) => setNewPeopleIds((prev) => (prev.includes(id) ? prev : [...prev, id]))}
+          onSubmit={() => handleAddTask({ preventDefault: () => {} } as React.FormEvent)}
         />
-        
+
         {/* Due date picker */}
         <input
           type="date"
@@ -272,6 +286,57 @@ export const TasksView: React.FC = () => {
         </button>
       </form>
 
+      {/* Chips das pessoas relacionadas à nova tarefa (via @) */}
+      {newPeopleIds.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", margin: "-6px 0 14px" }}>
+          <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>Relacionadas:</span>
+          {newPeopleIds.map((id) => {
+            const person = db.people.find((p) => p.id === id);
+            if (!person) return null;
+            return (
+              <span
+                key={id}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "3px 6px 3px 4px",
+                  borderRadius: 12,
+                  background: "#eef4ff",
+                  color: "#1d4ed8",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                <span
+                  style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: "50%",
+                    background: "#dbe6ff",
+                    fontSize: 9,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {initialsOf(person.name)}
+                </span>
+                {person.name}
+                <button
+                  type="button"
+                  onClick={() => setNewPeopleIds((prev) => prev.filter((x) => x !== id))}
+                  style={{ display: "flex", border: "none", background: "transparent", cursor: "pointer", color: "inherit", padding: 0 }}
+                  title="Remover"
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
       {/* Tasks List */}
       <div className="task-list" style={{ backgroundColor: "#ffffff", border: "1px solid var(--border-color)", borderRadius: "var(--border-radius-lg)", padding: "8px" }}>
         {filteredTasks.length > 0 ? (
@@ -303,20 +368,17 @@ export const TasksView: React.FC = () => {
                   {/* Título editável inline */}
                   {isEditingTitle ? (
                     <div ref={inlineRef} style={{ flex: 1 }}>
-                      <input
-                        type="text"
+                      <MentionTitleInput
                         className="form-input"
                         value={draftTitle}
-                        autoFocus
-                        onChange={(e) => setDraftTitle(e.target.value)}
+                        onChange={setDraftTitle}
+                        people={db.people}
+                        excludeIds={task.peopleIds || []}
+                        onMention={(id) => void addPersonToTask(task, id)}
+                        onSubmit={() => commitTitle(task)}
                         onBlur={() => commitTitle(task)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            commitTitle(task);
-                          }
-                        }}
-                        style={{ width: "100%", fontSize: "14px", padding: "4px 8px" }}
+                        autoFocus
+                        style={{ fontSize: "14px", padding: "4px 8px" }}
                       />
                     </div>
                   ) : (
@@ -330,6 +392,68 @@ export const TasksView: React.FC = () => {
                     >
                       {task.title}
                     </span>
+                  )}
+
+                  {/* Avatares das pessoas relacionadas */}
+                  {(task.peopleIds || []).length > 0 && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 8, flexWrap: "wrap" }}>
+                      {(task.peopleIds || []).map((id) => {
+                        const person = db.people.find((p) => p.id === id);
+                        if (!person) return null;
+                        return (
+                          <span
+                            key={id}
+                            title={`${person.name}${person.role ? " · " + person.role : ""}`}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              padding: "1px 6px 1px 2px",
+                              borderRadius: 10,
+                              background: "#eef4ff",
+                              color: "#1d4ed8",
+                              fontSize: 10,
+                              fontWeight: 600,
+                            }}
+                          >
+                            {person.avatarUrl ? (
+                              <img
+                                src={person.avatarUrl}
+                                alt={person.name}
+                                style={{ width: 16, height: 16, borderRadius: "50%", objectFit: "cover" }}
+                              />
+                            ) : (
+                              <span
+                                style={{
+                                  width: 16,
+                                  height: 16,
+                                  borderRadius: "50%",
+                                  background: "#dbe6ff",
+                                  fontSize: 8,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                              >
+                                {initialsOf(person.name)}
+                              </span>
+                            )}
+                            @{person.name}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void removePersonFromTask(task, id);
+                              }}
+                              style={{ display: "flex", border: "none", background: "transparent", cursor: "pointer", color: "inherit", padding: 0 }}
+                              title="Remover pessoa relacionada"
+                            >
+                              <X size={10} />
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
 

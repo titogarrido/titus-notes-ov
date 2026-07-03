@@ -18,7 +18,11 @@ import {
   SelfIdentity,
 } from "../lib/ollama";
 import { extractActionItems } from "../lib/ai";
+import { MentionTitleInput } from "./MentionTitleInput";
 import { useApp } from "../context/AppContext";
+
+const initialsOf = (name: string) =>
+  name.split(" ").filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase() || "").join("");
 
 interface ActionItemsPanelProps {
   noteId: string;
@@ -34,6 +38,8 @@ interface DraftItem {
   include: boolean;
   title: string;
   personId: string | null;
+  /** Pessoas relacionadas via @menção no título. */
+  peopleIds: string[];
   dueDate: string;
   /** A IA marcou como sua tarefa. */
   mine: boolean;
@@ -141,6 +147,7 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
           include: true,
           title: e.title,
           personId: resolvePersonId(e.assignee) ?? (mine ? selfPersonId : null),
+          peopleIds: [],
           dueDate: e.due || "",
           mine,
         };
@@ -176,6 +183,7 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
         include: true,
         title: "",
         personId: null,
+        peopleIds: [],
         dueDate: "",
         mine: false,
       },
@@ -200,6 +208,7 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
           dueDate: it.dueDate || "",
           projectId,
           personId: it.personId,
+          peopleIds: it.peopleIds.length ? it.peopleIds : undefined,
         });
         createdIds.add(it.id);
       }
@@ -490,24 +499,78 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
                     style={{ width: 16, height: 16, flexShrink: 0, cursor: "pointer" }}
                     title="Incluir esta tarefa"
                   />
-                  <input
-                    type="text"
-                    value={it.title}
-                    onChange={(e) => patchItem(it.id, { title: e.target.value })}
-                    placeholder="Descrição da tarefa"
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      border: "1px solid transparent",
-                      borderRadius: "6px",
-                      padding: "5px 8px",
-                      fontSize: "13px",
-                      background: "white",
-                      outline: "none",
-                    }}
-                    onFocus={(e) => (e.currentTarget.style.borderColor = "var(--border-color)")}
-                    onBlur={(e) => (e.currentTarget.style.borderColor = "transparent")}
-                  />
+                  <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                    <MentionTitleInput
+                      value={it.title}
+                      onChange={(v) => patchItem(it.id, { title: v })}
+                      people={db.people}
+                      excludeIds={it.peopleIds}
+                      onMention={(pid) =>
+                        patchItem(it.id, {
+                          peopleIds: it.peopleIds.includes(pid) ? it.peopleIds : [...it.peopleIds, pid],
+                        })
+                      }
+                      placeholder="Descrição da tarefa (use @ para relacionar pessoas)"
+                      style={{
+                        border: "1px solid var(--border-color)",
+                        borderRadius: "6px",
+                        padding: "5px 8px",
+                        fontSize: "13px",
+                        background: "white",
+                        outline: "none",
+                      }}
+                    />
+                    {it.peopleIds.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {it.peopleIds.map((pid) => {
+                          const p = db.people.find((x) => x.id === pid);
+                          if (!p) return null;
+                          return (
+                            <span
+                              key={pid}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                padding: "1px 6px 1px 3px",
+                                borderRadius: 10,
+                                background: "#eef4ff",
+                                color: "#1d4ed8",
+                                fontSize: 10,
+                                fontWeight: 600,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  width: 15,
+                                  height: 15,
+                                  borderRadius: "50%",
+                                  background: "#dbe6ff",
+                                  fontSize: 8,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                              >
+                                {initialsOf(p.name)}
+                              </span>
+                              @{p.name}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  patchItem(it.id, { peopleIds: it.peopleIds.filter((x) => x !== pid) })
+                                }
+                                style={{ display: "flex", border: "none", background: "transparent", cursor: "pointer", color: "inherit", padding: 0 }}
+                                title="Remover pessoa relacionada"
+                              >
+                                <Plus size={10} style={{ transform: "rotate(45deg)" }} />
+                              </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                   {it.mine && (
                     <span
                       title="A IA marcou como sua tarefa"

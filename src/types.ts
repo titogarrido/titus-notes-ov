@@ -146,6 +146,8 @@ export interface Task {
   dueDate: string;
   projectId: string | null;
   personId: string | null;
+  /** Pessoas relacionadas à tarefa, adicionadas via @menção no título. */
+  peopleIds?: string[];
   /** Tags livres para organização transversal. */
   tags?: string[];
 }
