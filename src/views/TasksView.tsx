@@ -365,96 +365,74 @@ export const TasksView: React.FC = () => {
                     </div>
                   </button>
 
-                  {/* Título editável inline */}
-                  {isEditingTitle ? (
-                    <div ref={inlineRef} style={{ flex: 1 }}>
-                      <MentionTitleInput
-                        className="form-input"
-                        value={draftTitle}
-                        onChange={setDraftTitle}
-                        people={db.people}
-                        excludeIds={task.peopleIds || []}
-                        onMention={(id) => void addPersonToTask(task, id)}
-                        onSubmit={() => commitTitle(task)}
-                        onBlur={() => commitTitle(task)}
-                        autoFocus
-                        style={{ fontSize: "14px", padding: "4px 8px" }}
-                      />
-                    </div>
-                  ) : (
-                    <span
-                      className={`task-title ${task.completed ? "completed" : ""}`}
-                      onClick={() => startEdit(task, "title")}
-                      title="Clique para editar"
-                      style={editableStyle}
-                      onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = "#f1f3f5")}
-                      onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "transparent")}
-                    >
-                      {task.title}
-                    </span>
-                  )}
+                  <div className="task-main">
+                    {/* Título editável inline */}
+                    {isEditingTitle ? (
+                      <div ref={inlineRef}>
+                        <MentionTitleInput
+                          className="form-input"
+                          value={draftTitle}
+                          onChange={setDraftTitle}
+                          people={db.people}
+                          excludeIds={task.peopleIds || []}
+                          onMention={(id) => void addPersonToTask(task, id)}
+                          onSubmit={() => commitTitle(task)}
+                          onBlur={() => commitTitle(task)}
+                          autoFocus
+                          style={{ fontSize: "14px", padding: "4px 8px" }}
+                        />
+                      </div>
+                    ) : (
+                      <span
+                        className={`task-title ${task.completed ? "completed" : ""}`}
+                        onClick={() => startEdit(task, "title")}
+                        title="Clique para editar"
+                        style={editableStyle}
+                        onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = "#f1f3f5")}
+                        onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "transparent")}
+                      >
+                        {task.title}
+                      </span>
+                    )}
 
-                  {/* Avatares das pessoas relacionadas */}
-                  {(task.peopleIds || []).length > 0 && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 8, flexWrap: "wrap" }}>
-                      {(task.peopleIds || []).map((id) => {
-                        const person = db.people.find((p) => p.id === id);
-                        if (!person) return null;
-                        return (
-                          <span
-                            key={id}
-                            title={`${person.name}${person.role ? " · " + person.role : ""}`}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 4,
-                              padding: "1px 6px 1px 2px",
-                              borderRadius: 10,
-                              background: "#eef4ff",
-                              color: "#1d4ed8",
-                              fontSize: 10,
-                              fontWeight: 600,
-                            }}
-                          >
-                            {person.avatarUrl ? (
-                              <img
-                                src={person.avatarUrl}
-                                alt={person.name}
-                                style={{ width: 16, height: 16, borderRadius: "50%", objectFit: "cover" }}
-                              />
-                            ) : (
-                              <span
-                                style={{
-                                  width: 16,
-                                  height: 16,
-                                  borderRadius: "50%",
-                                  background: "#dbe6ff",
-                                  fontSize: 8,
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                }}
-                              >
-                                {initialsOf(person.name)}
-                              </span>
-                            )}
-                            @{person.name}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void removePersonFromTask(task, id);
-                              }}
-                              style={{ display: "flex", border: "none", background: "transparent", cursor: "pointer", color: "inherit", padding: 0 }}
-                              title="Remover pessoa relacionada"
+                    {/* Linha secundária: pessoas relacionadas (@) */}
+                    {(task.peopleIds || []).length > 0 && (
+                      <div className="task-people">
+                        {(task.peopleIds || []).map((id) => {
+                          const person = db.people.find((p) => p.id === id);
+                          if (!person) return null;
+                          const firstName = person.name.split(" ")[0];
+                          return (
+                            <span
+                              key={id}
+                              className="task-person-chip"
+                              title={`${person.name}${person.role ? " · " + person.role : ""}`}
                             >
-                              <X size={10} />
-                            </button>
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
+                              {person.avatarUrl ? (
+                                <img src={person.avatarUrl} alt={person.name} className="task-person-chip-avatar" />
+                              ) : (
+                                <span className="task-person-chip-avatar task-person-chip-initials">
+                                  {initialsOf(person.name)}
+                                </span>
+                              )}
+                              <span className="task-person-chip-name">{firstName}</span>
+                              <button
+                                type="button"
+                                className="task-person-chip-remove"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void removePersonFromTask(task, id);
+                                }}
+                                title="Remover pessoa relacionada"
+                              >
+                                <X size={10} />
+                              </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="task-row-right">

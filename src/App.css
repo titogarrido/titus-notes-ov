@@ -562,8 +562,9 @@ button {
 
 .task-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
   padding: 10px 12px;
   border-radius: var(--border-radius-md);
   transition: background-color var(--transition-fast);
@@ -575,7 +576,7 @@ button {
 
 .task-row-left {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   flex: 1;
   min-width: 0;
@@ -586,6 +587,8 @@ button {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  /* Alinha o checkbox com a primeira linha (título) em tarefas de 2 linhas */
+  margin-top: 2px;
 }
 
 .task-checkbox {
@@ -623,11 +626,80 @@ button {
   color: var(--color-text-muted);
 }
 
+/* Coluna principal: título + linha de pessoas relacionadas */
+.task-main {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.task-people {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.task-person-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px 2px 2px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 600;
+  max-width: 170px;
+}
+
+.task-person-chip-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.task-person-chip-initials {
+  background: #dbe6ff;
+  font-size: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.task-person-chip-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-person-chip-remove {
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.55;
+  transition: opacity var(--transition-fast);
+}
+
+.task-person-chip-remove:hover {
+  opacity: 1;
+}
+
 .task-row-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   flex-shrink: 0;
+  /* Alinha os controles com a primeira linha (título) */
+  margin-top: 2px;
 }
 
 .task-meta-tag {
