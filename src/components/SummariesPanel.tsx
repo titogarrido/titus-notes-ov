@@ -85,13 +85,16 @@ export const SummariesPanel: React.FC<SummariesPanelProps> = ({
     setGenerating(true);
     try {
       const plain = noteToPlainText(noteContent);
-      if (!plain.trim()) throw new Error("A nota está vazia.");
+      if (!plain.trim() && !(transcript || "").trim()) {
+        throw new Error("A nota não tem conteúdo nem transcrição para resumir.");
+      }
       const prompt = buildPrompt(
         tpl,
         noteTitle,
         plain,
         settings.language || "pt-BR",
         transcript,
+        settings.prompts?.summary,
       );
       const content = await generateSummary(settings, prompt);
       const summary: Summary = {

@@ -30,8 +30,8 @@ export const Sidebar: React.FC = () => {
 
   const handleNewNote = async () => {
     const newNoteId = await addNote({
-      title: "Sem título",
-      content: "# Sem título\n\nComece a digitar aqui...",
+      title: "Nova Nota",
+      content: "",
       date: new Date().toISOString().split("T")[0],
       projectId: null,
       peopleIds: [],

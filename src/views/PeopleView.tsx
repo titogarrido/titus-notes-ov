@@ -1,11 +1,41 @@
 import React, { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
-import { Users, Plus, Edit3, Trash2, Mail, ArrowLeft, FolderKanban, FileText, CheckCircle2, Sparkles, RefreshCw, AlertTriangle, Search, X, Star, Building2, ListChecks, Link as LinkIcon } from "lucide-react";
+import { Users, Plus, Edit3, Trash2, Mail, ArrowLeft, FolderKanban, FileText, CheckCircle2, Sparkles, RefreshCw, AlertTriangle, Search, X, Star, Building2, ListChecks, Link as LinkIcon, ClipboardPaste } from "lucide-react";
 import { Person, AIPersonProfile } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import { Combobox, ComboboxOption } from "../components/Combobox";
 import { generateSummary, activeModel, aiProvider, activeAiLabel, PROVIDER_LABELS } from "../lib/ai";
+import { buildProfilePrompt } from "../lib/ollama";
+
+// Redimensiona/comprime uma imagem para um data URL pequeno o suficiente para
+// guardar no avatar (evita inchar o banco). JPEG, lado máximo padrão de 256px.
+const imageToAvatarDataUrl = (blob: Blob, max = 256): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("Canvas indisponível"));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Imagem inválida"));
+    };
+    img.src = url;
+  });
 
 export const PeopleView: React.FC = () => {
   const {
@@ -25,9 +55,13 @@ export const PeopleView: React.FC = () => {
   const [generatingProfile, setGeneratingProfile] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
 
-  // List filters
+  // List filters — a empresa padrão (se existir) é o filtro inicial.
   const [search, setSearch] = useState("");
-  const [filterCompanyId, setFilterCompanyId] = useState<string>("");
+  const [filterCompanyId, setFilterCompanyId] = useState<string>(() =>
+    db.defaultCompanyId && (db.companies || []).some((c) => c.id === db.defaultCompanyId)
+      ? db.defaultCompanyId
+      : "",
+  );
   const [filterDepartment, setFilterDepartment] = useState<string>("");
   const [onlyContacts, setOnlyContacts] = useState(false);
   const [sortMode, setSortMode] = useState<"nome" | "notas" | "tarefas" | "recente">("nome");
@@ -42,6 +76,7 @@ export const PeopleView: React.FC = () => {
   const [linkedinUrl, setLinkedinUrl] = useState("");
   const [companyId, setCompanyId] = useState("");
   const [isContact, setIsContact] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   const handleOpenCreate = () => {
     setName("");
@@ -51,8 +86,17 @@ export const PeopleView: React.FC = () => {
     setManagerId("");
     setAvatarUrl("");
     setLinkedinUrl("");
-    setCompanyId("");
+    // Herda a empresa do filtro ativo na lista; se estiver em "todas", cai para
+    // a empresa padrão global. Ignora ids de empresas já removidas.
+    const exists = (id: string) => !!id && (db.companies || []).some((c) => c.id === id);
+    const inherited = exists(filterCompanyId)
+      ? filterCompanyId
+      : exists(db.defaultCompanyId || "")
+        ? (db.defaultCompanyId as string)
+        : "";
+    setCompanyId(inherited);
     setIsContact(false);
+    setAvatarError(null);
     setIsCreating(true);
     setIsEditing(false);
   };
@@ -67,8 +111,51 @@ export const PeopleView: React.FC = () => {
     setLinkedinUrl(person.linkedinUrl || "");
     setCompanyId(person.companyId || "");
     setIsContact(!!person.isContact);
+    setAvatarError(null);
     setIsEditing(true);
     setIsCreating(false);
+  };
+
+  const applyAvatarBlob = async (blob: Blob) => {
+    try {
+      const dataUrl = await imageToAvatarDataUrl(blob);
+      setAvatarUrl(dataUrl);
+      setAvatarError(null);
+    } catch {
+      setAvatarError("Não foi possível processar a imagem.");
+    }
+  };
+
+  // Colar direto no campo (⌘/Ctrl+V) — funciona sem permissões especiais.
+  const handleAvatarPaste = async (e: React.ClipboardEvent) => {
+    const item = Array.from(e.clipboardData.items).find((i) =>
+      i.type.startsWith("image/"),
+    );
+    if (!item) return;
+    e.preventDefault();
+    const blob = item.getAsFile();
+    if (blob) await applyAvatarBlob(blob);
+  };
+
+  // Botão: lê a imagem da área de transferência via API assíncrona.
+  const handleAvatarClipboardButton = async () => {
+    setAvatarError(null);
+    try {
+      const items = await navigator.clipboard.read();
+      for (const it of items) {
+        const type = it.types.find((t) => t.startsWith("image/"));
+        if (type) {
+          const blob = await it.getType(type);
+          await applyAvatarBlob(blob);
+          return;
+        }
+      }
+      setAvatarError("Nenhuma imagem na área de transferência.");
+    } catch {
+      setAvatarError(
+        "Não foi possível ler a área de transferência. Cole a imagem no campo abaixo (⌘/Ctrl+V).",
+      );
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -118,45 +205,16 @@ export const PeopleView: React.FC = () => {
     ? db.people.find((p) => p.id === pendingDeleteId)
     : null;
 
-  const buildProfilePrompt = (
+  const buildProfilePromptFor = (
     person: Person,
     sources: { noteTitle: string; date: string; summaryContent: string }[],
-  ) => {
-    const lang =
-      (db.settings?.language && db.settings.language) || "Português do Brasil";
-    const blocks = sources
-      .map(
-        (s, i) =>
-          `--- Fonte ${i + 1} · Nota: "${s.noteTitle || "(sem título)"}" · Data: ${s.date || "n/d"} ---\n${s.summaryContent.trim()}`,
-      )
-      .join("\n\n");
-
-    return `Você é um analista de relacionamento profissional. Sua tarefa é gerar um PERFIL DESCRITIVO de uma pessoa, com base em sumários de reuniões em que ela participou.
-
-Idioma da resposta: ${lang}.
-Formate em Markdown, usando cabeçalhos "##" para cada seção e bullet points ("- ") quando fizer sentido. Não use tabelas em Markdown — prefira listas com bullet points. Seja factual, evite suposições e atribua afirmações às fontes quando possível (ex.: "Em 12/03, demonstrou interesse por X").
-
-IMPORTANTE: NÃO use tabelas em Markdown (nada de "|" ou linhas com "---"). Use apenas parágrafos e listas com bullets.
-
-Pessoa: ${person.name}
-Cargo: ${person.role || "—"}
-Departamento: ${person.department || "—"}
-E-mail: ${person.email || "—"}
-
-Seções obrigatórias (use exatamente estes títulos):
-## Resumo executivo
-## Áreas de interesse e responsabilidades
-## Estilo de trabalho e comunicação
-## Tópicos recorrentes e prioridades
-## Relacionamentos-chave mencionados
-## Pontos de atenção / próximos passos sugeridos
-
-Sumários disponíveis (${sources.length} no total, todos provenientes de notas em que esta pessoa participou):
-
-${blocks}
-
-Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma seção não tiver evidências suficientes nas fontes, escreva "Sem evidências suficientes nas notas." em vez de inventar.`;
-  };
+  ) =>
+    buildProfilePrompt(
+      person,
+      sources,
+      (db.settings?.language && db.settings.language) || "Português do Brasil",
+      db.settings?.prompts?.profile,
+    );
 
   const handleGenerateProfile = async () => {
     if (!selectedPerson) return;
@@ -195,7 +253,7 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
 
     setGeneratingProfile(true);
     try {
-      const prompt = buildProfilePrompt(selectedPerson, sources);
+      const prompt = buildProfilePromptFor(selectedPerson, sources);
       const content = await generateSummary(settings, prompt);
       const aiProfile: AIPersonProfile = {
         content,
@@ -843,13 +901,87 @@ Gere o perfil agora, somente em Markdown, sem comentários adicionais. Se alguma
                     Aparência
                   </div>
                   <div className="form-group">
-                    <label>URL do Avatar / Foto (Opcional)</label>
+                    <label>Foto / Avatar (Opcional)</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      {avatarUrl ? (
+                        <img
+                          src={avatarUrl}
+                          alt="Prévia do avatar"
+                          style={{ width: 56, height: 56, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1px solid var(--border-color)" }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: 56,
+                            height: 56,
+                            borderRadius: "50%",
+                            flexShrink: 0,
+                            background: "var(--bg-badge-gray)",
+                            color: "var(--color-text-muted)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 16,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {name.trim() ? initialsOf(name) : "?"}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            onClick={handleAvatarClipboardButton}
+                            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
+                          >
+                            <ClipboardPaste size={14} />
+                            <span>Colar da área de transferência</span>
+                          </button>
+                          {avatarUrl && (
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              onClick={() => {
+                                setAvatarUrl("");
+                                setAvatarError(null);
+                              }}
+                              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#cf222e", borderColor: "#cf222e44" }}
+                            >
+                              <X size={14} />
+                              <span>Remover</span>
+                            </button>
+                          )}
+                        </div>
+                        <div
+                          tabIndex={0}
+                          onPaste={handleAvatarPaste}
+                          style={{
+                            fontSize: 11,
+                            color: "var(--color-text-muted)",
+                            border: "1px dashed var(--border-color-dark)",
+                            borderRadius: 6,
+                            padding: "6px 10px",
+                            cursor: "text",
+                            outline: "none",
+                          }}
+                          title="Clique aqui e cole (⌘/Ctrl+V) uma imagem copiada"
+                        >
+                          Ou clique aqui e cole a imagem (⌘/Ctrl+V)
+                        </div>
+                      </div>
+                    </div>
+                    {avatarError && (
+                      <p style={{ margin: "6px 0 0", fontSize: 11, color: "#cf222e" }}>{avatarError}</p>
+                    )}
                     <input
                       type="url"
                       className="form-input"
-                      value={avatarUrl}
+                      value={avatarUrl.startsWith("data:") ? "" : avatarUrl}
                       onChange={(e) => setAvatarUrl(e.target.value)}
-                      placeholder="https://exemplo.com/foto.jpg"
+                      placeholder="…ou cole uma URL: https://exemplo.com/foto.jpg"
+                      style={{ marginTop: 8 }}
                     />
                   </div>
 

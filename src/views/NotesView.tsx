@@ -141,6 +141,12 @@ export const NotesView: React.FC = () => {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
+  // Seleção múltipla de notas na lista (para exclusão em lote).
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedNoteIds, setSelectedNoteIds] = useState<Set<string>>(new Set());
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
+  const [bulkTag, setBulkTag] = useState("");
+
   // List filters
   const [listSearch, setListSearch] = useState("");
   const [filterProjectId, setFilterProjectId] = useState<string>("__all");
@@ -346,6 +352,52 @@ export const NotesView: React.FC = () => {
     if (selectedEntityId === id) setSelectedEntityId(null);
   };
 
+  // ---------- seleção múltipla ----------
+
+  const toggleSelectionMode = () => {
+    setSelectionMode((v) => !v);
+    setSelectedNoteIds(new Set());
+  };
+
+  const toggleNoteSelected = (id: string) => {
+    setSelectedNoteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const confirmBulkDelete = async () => {
+    const ids = Array.from(selectedNoteIds);
+    setPendingBulkDelete(false);
+    for (const id of ids) {
+      await deleteNote(id);
+      if (selectedEntityId === id) setSelectedEntityId(null);
+    }
+    setSelectedNoteIds(new Set());
+    setSelectionMode(false);
+  };
+
+  const bulkMoveToProject = async (projectId: string | null) => {
+    for (const id of Array.from(selectedNoteIds)) {
+      await patchNote(id, { projectId });
+    }
+  };
+
+  const bulkAddTag = async () => {
+    const tag = normalizeTag(bulkTag);
+    if (!tag) return;
+    for (const id of Array.from(selectedNoteIds)) {
+      await patchNote(id, (old) => ({
+        tags: (old.tags || []).map(normalizeTag).includes(tag)
+          ? old.tags
+          : [...(old.tags || []), tag],
+      }));
+    }
+    setBulkTag("");
+  };
+
   const selectedNote = db.notes.find((n) => n.id === selectedEntityId);
   const pendingDeleteNote = pendingDeleteId
     ? db.notes.find((n) => n.id === pendingDeleteId)
@@ -419,27 +471,40 @@ export const NotesView: React.FC = () => {
                 )}
               </p>
             </div>
-            <button
-              className="btn-primary"
-              onClick={handleCreateNote}
-              style={{ display: "flex", alignItems: "center", gap: "6px" }}
-              title="Nova nota (⌘N)"
-            >
-              <Plus size={14} />
-              <span>Nova Nota</span>
-              <span
-                style={{
-                  marginLeft: 4,
-                  fontSize: 10,
-                  opacity: 0.7,
-                  border: "1px solid currentColor",
-                  borderRadius: 4,
-                  padding: "1px 5px",
-                }}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {totalNotes > 0 && (
+                <button
+                  className="btn-secondary"
+                  onClick={toggleSelectionMode}
+                  style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                  title={selectionMode ? "Sair do modo de seleção" : "Selecionar várias notas"}
+                >
+                  {selectionMode ? <X size={14} /> : <Check size={14} />}
+                  <span>{selectionMode ? "Cancelar" : "Selecionar"}</span>
+                </button>
+              )}
+              <button
+                className="btn-primary"
+                onClick={handleCreateNote}
+                style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                title="Nova nota (⌘N)"
               >
-                ⌘N
-              </span>
-            </button>
+                <Plus size={14} />
+                <span>Nova Nota</span>
+                <span
+                  style={{
+                    marginLeft: 4,
+                    fontSize: 10,
+                    opacity: 0.7,
+                    border: "1px solid currentColor",
+                    borderRadius: 4,
+                    padding: "1px 5px",
+                  }}
+                >
+                  ⌘N
+                </span>
+              </button>
+            </div>
           </div>
 
           {/* Filter bar */}
@@ -574,6 +639,115 @@ export const NotesView: React.FC = () => {
             />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+              {selectionMode && (
+                <div
+                  style={{
+                    position: "sticky",
+                    top: 0,
+                    zIndex: 5,
+                    display: "flex",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 10,
+                    padding: "10px 14px",
+                    background: "var(--bg-sidebar)",
+                    border: "1px solid var(--border-color)",
+                    borderRadius: 10,
+                  }}
+                >
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>
+                    {selectedNoteIds.size} selecionada{selectedNoteIds.size === 1 ? "" : "s"}
+                  </span>
+                  <button
+                    className="btn-secondary"
+                    style={{ fontSize: 12, padding: "4px 10px" }}
+                    onClick={() => setSelectedNoteIds(new Set(filteredNotes.map((n) => n.id)))}
+                  >
+                    Selecionar todas ({filteredNotes.length})
+                  </button>
+                  {selectedNoteIds.size > 0 && (
+                    <button
+                      className="btn-secondary"
+                      style={{ fontSize: 12, padding: "4px 10px" }}
+                      onClick={() => setSelectedNoteIds(new Set())}
+                    >
+                      Limpar
+                    </button>
+                  )}
+
+                  <span style={{ width: 1, alignSelf: "stretch", background: "var(--border-color)" }} />
+
+                  {/* Mover selecionadas para um projeto */}
+                  <div style={{ width: 180 }}>
+                    <Combobox
+                      value=""
+                      options={db.projects.map((p) => ({ id: p.id, label: p.name }))}
+                      onChange={(pid) => void bulkMoveToProject(pid || null)}
+                      emptyLabel="Sem projeto"
+                      placeholder="Mover para projeto…"
+                      noResultsText="Nenhum projeto"
+                      disabled={selectedNoteIds.size === 0}
+                      compact
+                    />
+                  </div>
+
+                  {/* Aplicar tag às selecionadas */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void bulkAddTag();
+                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 4 }}
+                  >
+                    <div style={{ position: "relative" }}>
+                      <Tag
+                        size={12}
+                        style={{
+                          position: "absolute",
+                          left: 8,
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          color: "var(--color-text-muted)",
+                        }}
+                      />
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={bulkTag}
+                        onChange={(e) => setBulkTag(e.target.value)}
+                        disabled={selectedNoteIds.size === 0}
+                        placeholder="Adicionar tag…"
+                        style={{ height: 30, width: 150, paddingLeft: 26, fontSize: 12 }}
+                      />
+                    </div>
+                    {bulkTag.trim() && (
+                      <button type="submit" className="btn-secondary" style={{ fontSize: 12, padding: "4px 10px" }}>
+                        Aplicar
+                      </button>
+                    )}
+                  </form>
+
+                  <button
+                    className="btn-secondary"
+                    disabled={selectedNoteIds.size === 0}
+                    onClick={() => setPendingBulkDelete(true)}
+                    style={{
+                      marginLeft: "auto",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 12,
+                      padding: "4px 12px",
+                      color: selectedNoteIds.size === 0 ? "var(--color-text-muted)" : "#cf222e",
+                      borderColor: selectedNoteIds.size === 0 ? undefined : "#cf222e44",
+                      opacity: selectedNoteIds.size === 0 ? 0.6 : 1,
+                    }}
+                  >
+                    <Trash2 size={14} />
+                    <span>Excluir selecionadas</span>
+                  </button>
+                </div>
+              )}
               {groupedNotes.map(([bucket, notes]) => (
                 <div key={bucket}>
                   <div
@@ -598,12 +772,38 @@ export const NotesView: React.FC = () => {
                       const participants = note.peopleIds
                         .map((id) => db.people.find((p) => p.id === id))
                         .filter(Boolean) as { id: string; name: string }[];
+                      const isSelected = selectedNoteIds.has(note.id);
                       return (
                         <div
                           key={note.id}
                           className="note-row"
-                          onClick={() => setSelectedEntityId(note.id)}
+                          onClick={() =>
+                            selectionMode
+                              ? toggleNoteSelected(note.id)
+                              : setSelectedEntityId(note.id)
+                          }
+                          style={
+                            selectionMode && isSelected
+                              ? { background: "var(--bg-badge-blue, #eef4ff)" }
+                              : undefined
+                          }
                         >
+                          {selectionMode && (
+                            <button
+                              type="button"
+                              className="task-checkbox-wrapper"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleNoteSelected(note.id);
+                              }}
+                              style={{ alignSelf: "center", marginRight: 4 }}
+                              aria-label={isSelected ? "Desmarcar nota" : "Marcar nota"}
+                            >
+                              <div className={`task-checkbox ${isSelected ? "checked" : ""}`}>
+                                {isSelected && <Check className="task-check-icon" />}
+                              </div>
+                            </button>
+                          )}
                           <div className="note-row-left">
                             <span className="note-row-title">{note.title || "Sem título"}</span>
                             <div className="note-row-meta">
@@ -707,17 +907,19 @@ export const NotesView: React.FC = () => {
                               </p>
                             )}
                           </div>
-                          <button
-                            className="task-delete-btn"
-                            style={{ opacity: 0.6 }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDelete(note.id);
-                            }}
-                            title="Excluir nota"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          {!selectionMode && (
+                            <button
+                              className="task-delete-btn"
+                              style={{ opacity: 0.6 }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDelete(note.id);
+                              }}
+                              title="Excluir nota"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                       );
                     })}
@@ -952,6 +1154,23 @@ export const NotesView: React.FC = () => {
         danger
         onConfirm={confirmDelete}
         onCancel={() => setPendingDeleteId(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingBulkDelete}
+        title="Excluir notas selecionadas?"
+        message={
+          <>
+            <strong>{selectedNoteIds.size}</strong> nota
+            {selectedNoteIds.size === 1 ? "" : "s"} serão removidas
+            permanentemente. As imagens anexadas que não estiverem em outras
+            notas também serão apagadas.
+          </>
+        }
+        confirmLabel="Excluir"
+        danger
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setPendingBulkDelete(false)}
       />
     </div>
   );

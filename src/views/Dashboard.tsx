@@ -285,6 +285,15 @@ export const Dashboard: React.FC = () => {
     .sort((a, b) => noteRecency(b).localeCompare(noteRecency(a)))
     .slice(0, 3);
 
+  // ----- Pessoas recentes (por data de cadastro; o id é `person-<timestamp>`) -----
+  const personCreatedAt = (id: string) => {
+    const m = /-(\d{10,})$/.exec(id);
+    return m ? Number(m[1]) : 0;
+  };
+  const recentPeople = [...db.people]
+    .sort((a, b) => personCreatedAt(b.id) - personCreatedAt(a.id))
+    .slice(0, 5);
+
   // ----- handlers -----
   const goToNote = (id: string) => {
     setSelectedEntityId(id);
@@ -951,7 +960,7 @@ export const Dashboard: React.FC = () => {
                   gap: "6px",
                 }}
               >
-                <Users size={16} /> Pessoas
+                <Users size={16} /> Pessoas recentes
               </h2>
               <button
                 className="btn-icon"
@@ -981,7 +990,7 @@ export const Dashboard: React.FC = () => {
                   Nenhuma pessoa cadastrada.
                 </div>
               ) : (
-                db.people.slice(0, 5).map((person) => (
+                recentPeople.map((person) => (
                   <div
                     key={person.id}
                     onClick={() => goToPerson(person.id)}

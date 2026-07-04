@@ -127,6 +127,16 @@ export interface AiSettings {
 
   // --- Codex CLI (usa a assinatura do ChatGPT via `codex login`) ---
   codexModel?: string;
+
+  /** Prompts customizados pelo usuário (sobrescrevem os padrões). Ausente/vazio = usa o padrão. */
+  prompts?: PromptOverrides;
+}
+
+/** Sobrescritas opcionais dos prompts padrão. Vazio = usa o padrão embutido. */
+export interface PromptOverrides {
+  summary?: string;
+  actionItems?: string;
+  profile?: string;
 }
 
 /** @deprecated Use {@link AiSettings}. Mantido para compatibilidade dos imports existentes. */
@@ -202,6 +212,8 @@ export interface Database {
   notes: Note[];
   tasks: Task[];
   companies?: Company[];
+  /** Empresa pré-selecionada ao cadastrar novas pessoas. Opcional. */
+  defaultCompanyId?: string | null;
   settings?: OllamaSettings;
   templates?: SummaryTemplate[];
   hyprnotePath?: string;

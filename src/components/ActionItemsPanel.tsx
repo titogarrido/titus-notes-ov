@@ -138,6 +138,7 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
         me,
         selfTranscript,
         customInstructions,
+        settings.prompts?.actionItems,
       );
       const extracted = await extractActionItems(settings, prompt);
       const drafts: DraftItem[] = extracted.map((e, i) => {

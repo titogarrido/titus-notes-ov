@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Person } from "../types";
 
 interface MentionTitleInputProps {
@@ -54,15 +54,43 @@ export const MentionTitleInput: React.FC<MentionTitleInputProps> = ({
   // Intervalo [start, end) do "@termo" em edição; null quando não há menção ativa.
   const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
   const [highlight, setHighlight] = useState(0);
+  // Posição do dropdown em coordenadas de viewport (position: fixed) para não
+  // ser recortado por ancestrais com overflow (ex.: .view-container rolável).
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const pendingCaret = useRef<number | null>(null);
+
+  const updatePos = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ top: r.bottom + 4, left: r.left, width: r.width });
+  };
 
   useLayoutEffect(() => {
     if (pendingCaret.current != null && inputRef.current) {
-      const pos = pendingCaret.current;
+      const caret = pendingCaret.current;
       pendingCaret.current = null;
-      inputRef.current.setSelectionRange(pos, pos);
+      inputRef.current.setSelectionRange(caret, caret);
     }
   });
+
+  // Enquanto há uma menção ativa, mantém o dropdown ancorado ao input mesmo
+  // durante rolagem/redimensionamento (usa captura para pegar rolagem interna).
+  useEffect(() => {
+    if (!mention) {
+      setPos(null);
+      return;
+    }
+    updatePos();
+    const onScrollOrResize = () => updatePos();
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mention]);
 
   const detectMention = (text: string, caret: number) => {
     // Procura o "@" que inicia o token sob o cursor (para trás até espaço/@).
@@ -171,18 +199,19 @@ export const MentionTitleInput: React.FC<MentionTitleInputProps> = ({
           onBlur?.();
         }}
       />
-      {open && (
+      {open && pos && (
         <div
           style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            minWidth: 220,
+            position: "fixed",
+            top: pos.top,
+            left: pos.left,
+            minWidth: Math.max(pos.width, 220),
+            maxWidth: 360,
             background: "white",
             border: "1px solid var(--border-color)",
             borderRadius: 10,
             boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-            zIndex: 200,
+            zIndex: 3000,
             padding: 4,
           }}
         >

@@ -287,6 +287,13 @@ button {
 }
 
 /* Modo de edição de nota - ocupa tela toda */
+/* A tela de Tarefas usa mais largura útil para títulos mais longos. */
+.view-container.view-tasks {
+  max-width: 1320px;
+  padding-left: 40px;
+  padding-right: 40px;
+}
+
 .view-container.note-editing-mode {
   padding: 0;
   max-width: none;
@@ -616,9 +623,8 @@ button {
 .task-title {
   font-size: 13px;
   line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .task-title.completed {
@@ -1335,6 +1341,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1;
+  min-width: 0;
 }
 
 .note-row-title {

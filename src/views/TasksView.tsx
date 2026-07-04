@@ -194,7 +194,7 @@ export const TasksView: React.FC = () => {
   ).length;
 
   return (
-    <div className="view-container">
+    <div className="view-container view-tasks">
       {/* Header */}
       <div className="tasks-header">
         <div>
@@ -550,7 +550,7 @@ export const TasksView: React.FC = () => {
                     </span>
                   )}
 
-                  <div style={{ minWidth: 150, maxWidth: 240 }}>
+                  <div style={{ minWidth: 120, maxWidth: 190 }}>
                     <TagInput
                       tags={task.tags || []}
                       suggestions={allTags(db)}

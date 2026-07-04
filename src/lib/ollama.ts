@@ -7,6 +7,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   PING_TIMEOUT_MS,
 } from "./aiCore";
+import { renderPrompt, resolvePromptTemplate } from "./prompts";
 
 // Re-exporta os tipos compartilhados para manter os imports existentes funcionando.
 export type { ChatMessage, GenerateOptions } from "./aiCore";
@@ -79,6 +80,7 @@ export function buildPrompt(
   noteText: string,
   language: string,
   transcript?: string,
+  customTemplate?: string | null,
 ): string {
   const lang = languageLabel(language);
   const sectionsBlock = template.sections.length
@@ -89,24 +91,15 @@ export function buildPrompt(
     ? `\n\nTranscrição completa da reunião (use como fonte primária):\n"""\n${transcript.trim()}\n"""`
     : "";
 
-  return `Você é um assistente que gera sumários de reuniões.
-Idioma da resposta: ${lang}.
-Formate a resposta em Markdown, usando cabeçalhos "##" para cada seção e bullet points quando fizer sentido.
-Não use tabelas em Markdown — prefira listas com bullet points.
-Seja objetivo, mantenha nomes próprios e datas.
-
-Template "${template.name}" — ${template.description || "sumário de reunião"}.
-Seções obrigatórias (use exatamente estes títulos):
-${sectionsBlock}
-
-Título da nota: ${noteTitle || "(sem título)"}
-
-Anotações da reunião:
-"""
-${noteText}
-"""${transcriptBlock}
-
-Gere o sumário agora, somente em Markdown, sem comentários adicionais.`;
+  return renderPrompt(resolvePromptTemplate("summary", customTemplate), {
+    idioma: lang,
+    nomeTemplate: template.name,
+    descricaoTemplate: template.description || "sumário de reunião",
+    secoes: sectionsBlock,
+    tituloNota: noteTitle || "(sem título)",
+    notas: noteText,
+    transcricao: transcriptBlock,
+  });
 }
 
 /**
@@ -177,6 +170,7 @@ export function buildActionItemsPrompt(
   me: SelfIdentity,
   selfTranscript?: string,
   extraInstructions?: string,
+  customTemplate?: string | null,
 ): string {
   const lang = languageLabel(language);
   const transcriptBlock = transcript && transcript.trim()
@@ -205,29 +199,47 @@ export function buildActionItemsPrompt(
     ? `\n\nInstruções adicionais do usuário (priorize-as ao decidir o que extrair, mantendo o formato de saída):\n"""\n${extraInstructions.trim()}\n"""`
     : "";
 
-  return `Você extrai itens de ação (tarefas / próximos passos) de reuniões.
-Idioma dos títulos: ${lang}.
-Data de hoje: ${today} (use para resolver datas relativas como "amanhã", "sexta", "semana que vem").
+  return renderPrompt(resolvePromptTemplate("actionItems", customTemplate), {
+    idioma: lang,
+    hoje: today,
+    seusNomes: namesList,
+    responsabilidades: respBlock,
+    instrucoesExtras: extraBlock,
+    tituloNota: noteTitle || "(sem título)",
+    notas: noteText,
+    transcricao: transcriptBlock,
+    suasFalas: selfBlock,
+    sumarios: summaryBlock,
+    pessoas: peopleBlock,
+  });
+}
 
-VOCÊ (o usuário) é referido nas reuniões por: ${namesList}.${respBlock}
+// --- Perfil de pessoas -------------------------------------------------------
 
-Responda APENAS com um array JSON válido, sem texto antes ou depois, sem cercas de código.
-Cada elemento tem exatamente estas chaves:
-  - "title": string — a tarefa no infinitivo, objetiva e acionável.
-  - "assignee": string ou null — o responsável. Se a pessoa estiver na lista de pessoas conhecidas, use o nome EXATO de lá; caso contrário use o nome citado ou null.
-  - "due": string ou null — data de vencimento no formato "yyyy-mm-dd", apenas se houver prazo claro; senão null.
-  - "owner": "me", "other" ou null. Use "me" quando a tarefa for SUA: atribuída a você por um dos seus nomes (${namesList}), OU assumida por você em primeira pessoa ("eu vou", "deixa comigo", "fico de"), especialmente se o compromisso aparecer nos trechos ditos por VOCÊ. Se a transcrição estiver rotulada com "(Você)" e "(Outros)", trate as falas marcadas "(Você)" como suas e as "(Outros)" como de terceiros. Use "other" quando for claramente de outra pessoa. Use null se não der pra saber.
+/** Gera o prompt de perfil descritivo de uma pessoa a partir dos sumários. */
+export function buildProfilePrompt(
+  person: { name: string; role?: string; department?: string; email?: string },
+  sources: { noteTitle: string; date: string; summaryContent: string }[],
+  language: string,
+  customTemplate?: string | null,
+): string {
+  const lang = language || "Português do Brasil";
+  const blocks = sources
+    .map(
+      (s, i) =>
+        `--- Fonte ${i + 1} · Nota: "${s.noteTitle || "(sem título)"}" · Data: ${s.date || "n/d"} ---\n${s.summaryContent.trim()}`,
+    )
+    .join("\n\n");
 
-Inclua somente compromissos reais e acionáveis. Não invente tarefas. Se não houver nenhuma, responda [].${extraBlock}
-
-Título da nota: ${noteTitle || "(sem título)"}
-
-Anotações da reunião:
-"""
-${noteText}
-"""${transcriptBlock}${selfBlock}${summaryBlock}${peopleBlock}
-
-Agora responda somente com o array JSON.`;
+  return renderPrompt(resolvePromptTemplate("profile", customTemplate), {
+    idioma: lang,
+    nome: person.name,
+    cargo: person.role || "—",
+    departamento: person.department || "—",
+    email: person.email || "—",
+    totalFontes: String(sources.length),
+    fontes: blocks,
+  });
 }
 
 /** Extrai um array JSON de uma resposta de LLM, tolerando cercas e texto ao redor. */

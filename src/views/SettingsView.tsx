@@ -46,6 +46,7 @@ import {
   TranscriptionModelStatus,
 } from "../types";
 import { pingProvider } from "../lib/ai";
+import { DEFAULT_PROMPTS, PROMPT_META, PromptKind } from "../lib/prompts";
 import {
   codexLoginStart,
   codexLoginComplete,
@@ -129,6 +130,10 @@ export const SettingsView: React.FC = () => {
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState(settings.openaiBaseUrl || "");
   const [codexModel, setCodexModel] = useState(settings.codexModel || "");
   const [language, setLanguage] = useState(settings.language || "pt-BR");
+  // Prompts: o textarea mostra o prompt efetivo (override salvo ou o padrão).
+  const [promptSummary, setPromptSummary] = useState(settings.prompts?.summary || DEFAULT_PROMPTS.summary);
+  const [promptActionItems, setPromptActionItems] = useState(settings.prompts?.actionItems || DEFAULT_PROMPTS.actionItems);
+  const [promptProfile, setPromptProfile] = useState(settings.prompts?.profile || DEFAULT_PROMPTS.profile);
   const [savedHint, setSavedHint] = useState(false);
 
   useEffect(() => {
@@ -140,6 +145,9 @@ export const SettingsView: React.FC = () => {
     setOpenaiBaseUrl(settings.openaiBaseUrl || "");
     setCodexModel(settings.codexModel || "");
     setLanguage(settings.language || "pt-BR");
+    setPromptSummary(settings.prompts?.summary || DEFAULT_PROMPTS.summary);
+    setPromptActionItems(settings.prompts?.actionItems || DEFAULT_PROMPTS.actionItems);
+    setPromptProfile(settings.prompts?.profile || DEFAULT_PROMPTS.profile);
   }, [settings]);
 
   // Conexão / modelos disponíveis
@@ -162,6 +170,13 @@ export const SettingsView: React.FC = () => {
     openaiBaseUrl: openaiBaseUrl.trim(),
     codexModel: codexModel.trim(),
     language,
+    prompts: {
+      // Só persiste quando difere do padrão; igual ao padrão = usa o embutido.
+      summary: promptSummary.trim() && promptSummary !== DEFAULT_PROMPTS.summary ? promptSummary : undefined,
+      actionItems:
+        promptActionItems.trim() && promptActionItems !== DEFAULT_PROMPTS.actionItems ? promptActionItems : undefined,
+      profile: promptProfile.trim() && promptProfile !== DEFAULT_PROMPTS.profile ? promptProfile : undefined,
+    },
   });
 
   const handleSaveSettings = async () => {
@@ -922,6 +937,7 @@ export const SettingsView: React.FC = () => {
       label: "Inteligência Artificial",
       items: [
         { id: "ai", label: "Configuração de AIs" },
+        { id: "prompts", label: "Prompts de IA" },
         { id: "transcription", label: "Transcrição local" },
         { id: "templates", label: "Templates de sumário" },
       ],
@@ -1343,6 +1359,112 @@ export const SettingsView: React.FC = () => {
             {connStatus.kind === "error" && (
               <span style={{ fontSize: "12px", color: "#cf222e", display: "flex", alignItems: "center", gap: "4px" }}>
                 <AlertCircle size={14} /> {connStatus.message}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Prompts de IA */}
+        <div id="section-prompts" className="settings-card">
+          <h2 className="section-title" style={{ fontSize: "15px", marginBottom: "6px" }}>
+            <Sparkles size={16} />
+            <span>Prompts de IA</span>
+          </h2>
+          <p style={{ fontSize: "12px", color: "var(--color-text-muted)", marginBottom: 16, lineHeight: 1.5 }}>
+            Personalize os prompts usados nas gerações. Use os marcadores{" "}
+            <code>{"{{campo}}"}</code> para inserir os dados dinâmicos (eles são
+            substituídos automaticamente). Deixe igual ao padrão para usar o
+            embutido; use "Restaurar padrão" para reverter.
+          </p>
+
+          {([
+            { kind: "summary" as PromptKind, value: promptSummary, setValue: setPromptSummary },
+            { kind: "actionItems" as PromptKind, value: promptActionItems, setValue: setPromptActionItems },
+            { kind: "profile" as PromptKind, value: promptProfile, setValue: setPromptProfile },
+          ]).map(({ kind, value, setValue }) => {
+            const meta = PROMPT_META[kind];
+            const isDefault = value === DEFAULT_PROMPTS[kind];
+            return (
+              <div
+                key={kind}
+                style={{
+                  border: "1px solid var(--border-color)",
+                  borderRadius: 10,
+                  padding: "12px 14px",
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{meta.label}</div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>{meta.description}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {!isDefault && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          padding: "2px 6px",
+                          borderRadius: 10,
+                          background: "var(--bg-badge-orange)",
+                          color: "var(--color-badge-orange)",
+                        }}
+                      >
+                        PERSONALIZADO
+                      </span>
+                    )}
+                    <button
+                      className="btn-secondary"
+                      style={{ fontSize: 11, padding: "4px 10px", opacity: isDefault ? 0.5 : 1 }}
+                      disabled={isDefault}
+                      onClick={() => setValue(DEFAULT_PROMPTS[kind])}
+                      title="Restaurar o prompt padrão"
+                    >
+                      Restaurar padrão
+                    </button>
+                  </div>
+                </div>
+
+                <textarea
+                  className="form-input"
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  spellCheck={false}
+                  style={{
+                    width: "100%",
+                    minHeight: 160,
+                    marginTop: 10,
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    resize: "vertical",
+                    whiteSpace: "pre",
+                    overflowWrap: "normal",
+                    overflowX: "auto",
+                  }}
+                />
+
+                <div style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 8 }}>
+                  Marcadores disponíveis:{" "}
+                  {meta.placeholders.map((p, i) => (
+                    <React.Fragment key={p.token}>
+                      {i > 0 && ", "}
+                      <code title={p.desc}>{`{{${p.token}}}`}</code>
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+            <button className="btn-primary" onClick={handleSaveSettings}>
+              Salvar prompts
+            </button>
+            {savedHint && (
+              <span style={{ fontSize: "12px", color: "#1f8e3d", display: "flex", alignItems: "center", gap: "4px" }}>
+                <CheckCircle2 size={14} /> Salvo
               </span>
             )}
           </div>

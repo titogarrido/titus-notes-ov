@@ -13,6 +13,7 @@ import {
   Search,
   ZoomIn,
   ZoomOut,
+  Star,
   Maximize2,
 } from "lucide-react";
 import { Company, CompanyScope, CompanyType, Person } from "../types";
@@ -347,7 +348,15 @@ export const OrganogramaView: React.FC = () => {
     addCompany,
     updateCompany,
     deleteCompany,
+    saveDatabase,
   } = useApp();
+
+  const toggleDefaultCompany = async (companyId: string) => {
+    await saveDatabase((prev) => ({
+      ...prev,
+      defaultCompanyId: prev.defaultCompanyId === companyId ? null : companyId,
+    }));
+  };
 
   const companies = db.companies || [];
 
@@ -368,6 +377,20 @@ export const OrganogramaView: React.FC = () => {
   const ZOOM_MAX = 1.25;
   const adjustZoom = (delta: number) =>
     setZoom((z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round((z + delta) * 100) / 100)));
+
+  // Ao entrar sem uma empresa em contexto, foca a empresa padrão (se definida).
+  useEffect(() => {
+    if (
+      !selectedCompanyId &&
+      db.defaultCompanyId &&
+      companies.some((c) => c.id === db.defaultCompanyId)
+    ) {
+      setSelectedEntityId(db.defaultCompanyId);
+      setViewMode("hierarquia");
+    }
+    // Executa apenas na montagem da view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const selectedCompany = selectedCompanyId
     ? companies.find((c) => c.id === selectedCompanyId) || null
@@ -484,12 +507,14 @@ export const OrganogramaView: React.FC = () => {
         {companies.map((c) => {
           const { people, contacts } = counts(c.id);
           const isActive = selectedCompanyId === c.id;
+          const isDefault = db.defaultCompanyId === c.id;
           return (
             <button
               key={c.id}
               onClick={() => handleSelectCompany(isActive ? null : c.id)}
               className="pane-card"
               style={{
+                position: "relative",
                 padding: "14px",
                 textAlign: "left",
                 cursor: "pointer",
@@ -498,7 +523,41 @@ export const OrganogramaView: React.FC = () => {
                 background: "var(--bg-card)",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+              <span
+                role="button"
+                tabIndex={0}
+                title={isDefault ? "Empresa padrão — clique para remover" : "Definir como empresa padrão"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void toggleDefaultCompany(c.id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void toggleDefaultCompany(c.id);
+                  }
+                }}
+                style={{
+                  position: "absolute",
+                  top: 8,
+                  right: 8,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: isDefault ? "2px 6px" : "3px",
+                  borderRadius: 999,
+                  cursor: "pointer",
+                  color: isDefault ? "var(--color-badge-orange)" : "var(--color-text-muted)",
+                  background: isDefault ? "var(--bg-badge-orange)" : "transparent",
+                  fontSize: 9,
+                  fontWeight: 700,
+                }}
+              >
+                <Star size={12} fill={isDefault ? "currentColor" : "none"} />
+                {isDefault && <span>PADRÃO</span>}
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px", paddingRight: 24 }}>
                 <div style={{ width: 36, height: 36, borderRadius: 8, backgroundColor: "var(--bg-badge-gray)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12 }}>
                   {initials(c.name)}
                 </div>
