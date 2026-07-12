@@ -71,6 +71,16 @@ input, textarea, button, select {
   font-size: inherit;
 }
 
+/* Reabilita seleção de texto onde o usuário precisa copiar conteúdo:
+   sumários gerados por IA (.markdown-body) e mensagens do chat. */
+.markdown-body,
+.note-chat-md,
+.chat-message-bubble {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
 button {
   cursor: pointer;
   border: none;

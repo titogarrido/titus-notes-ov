@@ -9,6 +9,8 @@ export interface Person {
   linkedinUrl?: string;
   companyId?: string | null;
   isContact?: boolean;
+  /** Observações livres sobre a pessoa (anotações manuais). */
+  observations?: string;
   aiProfile?: AIPersonProfile;
 }
 

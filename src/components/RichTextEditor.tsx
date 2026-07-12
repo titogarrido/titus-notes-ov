@@ -21,6 +21,7 @@ import { LinkNode } from "@lexical/link";
 import { ListPlugin } from "@lexical/react/LexicalListPlugin";
 import { LinkPlugin } from "@lexical/react/LexicalLinkPlugin";
 import { MarkdownShortcutPlugin } from "@lexical/react/LexicalMarkdownShortcutPlugin";
+import { TabIndentationPlugin } from "@lexical/react/LexicalTabIndentationPlugin";
 import { TRANSFORMERS } from "@lexical/markdown";
 import {
   BeautifulMentionsPlugin,
@@ -1676,6 +1677,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
                 <HistoryPlugin />
                 {autoFocus && <AutoFocusPlugin />}
                 <ListPlugin />
+                <TabIndentationPlugin />
                 <LinkPlugin />
                 <MarkdownShortcutPlugin transformers={TRANSFORMERS} />
 

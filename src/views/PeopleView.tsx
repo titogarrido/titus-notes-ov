@@ -76,6 +76,7 @@ export const PeopleView: React.FC = () => {
   const [linkedinUrl, setLinkedinUrl] = useState("");
   const [companyId, setCompanyId] = useState("");
   const [isContact, setIsContact] = useState(false);
+  const [observations, setObservations] = useState("");
   const [avatarError, setAvatarError] = useState<string | null>(null);
 
   const handleOpenCreate = () => {
@@ -96,6 +97,7 @@ export const PeopleView: React.FC = () => {
         : "";
     setCompanyId(inherited);
     setIsContact(false);
+    setObservations("");
     setAvatarError(null);
     setIsCreating(true);
     setIsEditing(false);
@@ -111,6 +113,7 @@ export const PeopleView: React.FC = () => {
     setLinkedinUrl(person.linkedinUrl || "");
     setCompanyId(person.companyId || "");
     setIsContact(!!person.isContact);
+    setObservations(person.observations || "");
     setAvatarError(null);
     setIsEditing(true);
     setIsCreating(false);
@@ -172,6 +175,7 @@ export const PeopleView: React.FC = () => {
       linkedinUrl: linkedinUrl.trim() || undefined,
       companyId: companyId || null,
       isContact,
+      observations: observations.trim() || undefined,
     };
 
     if (isCreating) {
@@ -898,6 +902,21 @@ export const PeopleView: React.FC = () => {
                   </div>
 
                   <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--color-text-muted)", marginTop: 16, marginBottom: 8, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
+                    Observações
+                  </div>
+                  <div className="form-group">
+                    <label>Observações (Opcional)</label>
+                    <textarea
+                      className="form-input"
+                      value={observations}
+                      onChange={(e) => setObservations(e.target.value)}
+                      placeholder="Anotações livres sobre esta pessoa (preferências, contexto, histórico…)"
+                      rows={4}
+                      style={{ resize: "vertical", minHeight: 80, fontFamily: "inherit" }}
+                    />
+                  </div>
+
+                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--color-text-muted)", marginTop: 16, marginBottom: 8, paddingTop: 12, borderTop: "1px solid var(--border-color)" }}>
                     Aparência
                   </div>
                   <div className="form-group">
@@ -1131,6 +1150,24 @@ export const PeopleView: React.FC = () => {
                         <span className="people-card-dept" style={{ display: "inline-block" }}>
                           {selectedPerson.department}
                         </span>
+                      </div>
+                    )}
+
+                    {/* Observations */}
+                    {selectedPerson.observations && (
+                      <div className="profile-section-item">
+                        <h3 className="profile-section-title">Observações</h3>
+                        <p
+                          style={{
+                            fontSize: "13px",
+                            lineHeight: 1.55,
+                            whiteSpace: "pre-wrap",
+                            color: "var(--color-text)",
+                            margin: 0,
+                          }}
+                        >
+                          {selectedPerson.observations}
+                        </p>
                       </div>
                     )}
 

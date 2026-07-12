@@ -673,6 +673,7 @@ const MessageBubble: React.FC<{ role: "user" | "assistant"; content: string }> =
   const isUser = role === "user";
   return (
     <div
+      className="chat-message-bubble"
       style={{
         alignSelf: isUser ? "flex-end" : "flex-start",
         maxWidth: "85%",
