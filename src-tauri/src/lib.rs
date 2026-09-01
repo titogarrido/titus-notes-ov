@@ -1429,6 +1429,7 @@ pub fn run() {
             recorder::stop_recording,
             recorder::cancel_recording,
             recorder::recording_status,
+            recorder::set_microphone_muted,
             transcriber::transcription_model_status,
             transcriber::download_transcription_model,
             transcriber::cancel_transcription_model_download,

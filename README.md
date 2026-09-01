@@ -32,6 +32,8 @@ sem servidor.
 ### 🎙️ Gravação e transcrição
 - Captura simultânea de **microfone + áudio do sistema** (mixados num MP3 mono
   16 kHz / 32 kbps para ouvir, e em **canais separados** durante a gravação)
+- **Mute do microfone durante a gravação** sem interromper o áudio do sistema,
+  preservando a duração e os timestamps da reunião
 - **Transcrição 100% local** com Parakeet v3 (`parakeet-tdt-0.6b-v3`, ONNX) — o modelo é
   baixado uma única vez sob demanda
 - **Modo de transcrição configurável** (Configurações → Transcrição local):

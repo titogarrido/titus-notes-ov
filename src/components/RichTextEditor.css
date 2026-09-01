@@ -1076,6 +1076,16 @@
   background: #1f2937;
 }
 
+.recorder-btn-mic-muted {
+  border-color: #b45309;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.recorder-btn-mic-muted:hover {
+  background: #fef3c7;
+}
+
 .recorder-btn-discard {
   border-color: #dc2626;
   color: #dc2626;
@@ -1095,6 +1105,11 @@
   background: #fee2e2;
   color: #b91c1c;
   flex-shrink: 0;
+}
+
+.recorder-source-badge.is-muted {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .recorder-select {
@@ -1136,6 +1151,34 @@
 
 .recording-tab-stop:hover {
   background: #991b1b;
+}
+
+.recording-tab-mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #b91c1c;
+  cursor: pointer;
+}
+
+.recording-tab-mic:hover {
+  background: rgba(185, 28, 28, 0.12);
+}
+
+.recording-tab-mic.is-muted {
+  background: #b45309;
+  color: white;
+}
+
+.recording-tab-mic:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* Botão de iniciar gravação na barra de abas */

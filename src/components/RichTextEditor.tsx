@@ -2,7 +2,7 @@ import React, { useRef, useState, useMemo, useCallback, useEffect } from "react"
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./RichTextEditor.css";
-import { FileText, Sparkles, Mic, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2, Captions, Download, Loader2, X, Check, ListChecks, Upload } from "lucide-react";
+import { FileText, Sparkles, Mic, MicOff, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2, Captions, Download, Loader2, X, Check, ListChecks, Upload } from "lucide-react";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { Summary, SummaryTemplate, OllamaSettings } from "../types";
 import { SummariesPanel } from "./SummariesPanel";
@@ -573,6 +573,7 @@ interface BackendRecordingStatus {
   noteId: string;
   elapsedSecs: number;
   systemAudio: boolean;
+  micMuted: boolean;
   warning: string | null;
 }
 
@@ -609,6 +610,8 @@ const RecordingTabControl: React.FC<{
   const { db } = useApp();
   const [state, setState] = useState<"idle" | "mine" | "other" | "busy">("idle");
   const [elapsed, setElapsed] = useState(0);
+  const [micMuted, setMicMuted] = useState(false);
+  const [micToggleBusy, setMicToggleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justSaved, setJustSaved] = useState(false);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -617,10 +620,12 @@ const RecordingTabControl: React.FC<{
     invoke<BackendRecordingStatus | null>("recording_status")
       .then((s) => {
         if (!s) {
+          setMicMuted(false);
           setState((st) => (st === "busy" ? st : "idle"));
           return;
         }
         setElapsed(s.elapsedSecs);
+        setMicMuted(s.micMuted);
         setState(s.noteId === noteId ? "mine" : "other");
       })
       .catch(() => setState("idle"));
@@ -674,6 +679,7 @@ const RecordingTabControl: React.FC<{
         live: db.transcriptionMode === "realtime",
       });
       setElapsed(0);
+      setMicMuted(false);
       setState("mine");
     } catch (e: any) {
       setError(String(e?.message || e));
@@ -700,13 +706,31 @@ const RecordingTabControl: React.FC<{
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
+  const toggleMicrophone = async () => {
+    if (micToggleBusy) return;
+    setMicToggleBusy(true);
+    setError(null);
+    try {
+      const muted = await invoke<boolean>("set_microphone_muted", { muted: !micMuted });
+      setMicMuted(muted);
+      notifyRecordingChanged();
+    } catch (e: any) {
+      setError(String(e?.message || e));
+      refresh();
+    } finally {
+      setMicToggleBusy(false);
+    }
+  };
+
   if (state === "mine" || state === "other") {
     return (
       <span
         className="recording-tab-indicator"
         title={
           state === "mine"
-            ? "Gravação em andamento nesta nota (controles completos na aba Transcrição)"
+            ? micMuted
+              ? "Gravação em andamento nesta nota — microfone mutado"
+              : "Gravação em andamento nesta nota (controles completos na aba Transcrição)"
             : "Há uma gravação em andamento em outra nota"
         }
       >
@@ -714,6 +738,17 @@ const RecordingTabControl: React.FC<{
         {state === "mine" ? (
           <>
             <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatElapsed(elapsed)}</span>
+            <button
+              type="button"
+              className={`recording-tab-mic${micMuted ? " is-muted" : ""}`}
+              title={micMuted ? "Ativar microfone na gravação" : "Mutar microfone na gravação"}
+              aria-label={micMuted ? "Ativar microfone na gravação" : "Mutar microfone na gravação"}
+              aria-pressed={micMuted}
+              disabled={micToggleBusy}
+              onClick={() => void toggleMicrophone()}
+            >
+              {micMuted ? <MicOff size={11} /> : <Mic size={11} />}
+            </button>
             <button
               type="button"
               className="recording-tab-stop"
@@ -775,6 +810,8 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
   const [error, setError] = useState<string | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [systemAudio, setSystemAudio] = useState(false);
+  const [micMuted, setMicMuted] = useState(false);
+  const [micToggleBusy, setMicToggleBusy] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
   const [autoStopSecs, setAutoStopSecs] = useState<number>(loadAutoStopSecs);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
@@ -788,6 +825,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
         if (cancelled || !s) return;
         setElapsed(s.elapsedSecs);
         setSystemAudio(s.systemAudio);
+        setMicMuted(s.micMuted);
         setWarning(s.warning);
         setState(s.noteId === noteId ? "recording" : "other");
       })
@@ -804,11 +842,13 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
       invoke<BackendRecordingStatus | null>("recording_status")
         .then((s) => {
           if (!s) {
+            setMicMuted(false);
             setState((st) => (st === "busy" ? st : "idle"));
             return;
           }
           setElapsed(s.elapsedSecs);
           setSystemAudio(s.systemAudio);
+          setMicMuted(s.micMuted);
           setWarning(s.warning);
           setState(s.noteId === noteId ? "recording" : "other");
         })
@@ -856,6 +896,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
       listen<{ noteId: string; reason: string }>("recording-finished", (e) => {
         if (e.payload.noteId !== noteId) return;
         setState("idle");
+        setMicMuted(false);
         setSavedNotice(
           e.payload.reason === "auto"
             ? "Gravação encerrada automaticamente (silêncio detectado) e anexada à nota."
@@ -869,6 +910,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
       listen<{ noteId: string; message: string }>("recording-error", (e) => {
         if (e.payload.noteId !== noteId) return;
         setState("idle");
+        setMicMuted(false);
         setError(e.payload.message);
       }),
     );
@@ -894,6 +936,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
       setMaxLevel(0);
       setConfirmDiscard(false);
       setSystemAudio(status.systemAudio);
+      setMicMuted(status.micMuted);
       setWarning(status.warning);
       setState("recording");
       notifyRecordingChanged();
@@ -931,12 +974,30 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
     notifyRecordingChanged();
   };
 
+  const toggleMicrophone = async () => {
+    if (micToggleBusy) return;
+    setMicToggleBusy(true);
+    setError(null);
+    try {
+      const muted = await invoke<boolean>("set_microphone_muted", { muted: !micMuted });
+      setMicMuted(muted);
+      setLevel(0);
+      setMaxLevel(0);
+      notifyRecordingChanged();
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setMicToggleBusy(false);
+    }
+  };
+
   const changeAutoStop = (v: number) => {
     setAutoStopSecs(v);
     localStorage.setItem(AUTO_STOP_STORAGE_KEY, String(v));
   };
 
-  const showMicHint = state === "recording" && elapsed >= 4 && maxLevel < 0.01;
+  const showMicHint =
+    state === "recording" && !micMuted && elapsed >= 4 && maxLevel < 0.01;
 
   return (
     <div
@@ -958,13 +1019,41 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
             <span style={{ fontSize: "13px", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
               {formatElapsed(elapsed)}
             </span>
-            <span className="recorder-source-badge" title={
-              systemAudio
-                ? "Capturando o microfone e o áudio do sistema (participantes remotos)"
-                : "Capturando apenas o microfone"
-            }>
-              {systemAudio ? "mic + sistema" : "só microfone"}
+            <span
+              className={`recorder-source-badge${micMuted ? " is-muted" : ""}`}
+              title={
+                micMuted
+                  ? systemAudio
+                    ? "Microfone mutado; capturando apenas os participantes remotos"
+                    : "Microfone mutado; nenhum áudio está sendo capturado"
+                  : systemAudio
+                    ? "Capturando o microfone e o áudio do sistema (participantes remotos)"
+                    : "Capturando apenas o microfone"
+              }
+            >
+              {micMuted
+                ? systemAudio
+                  ? "mic mutado + sistema"
+                  : "mic mutado"
+                : systemAudio
+                  ? "mic + sistema"
+                  : "só microfone"}
             </span>
+            <button
+              type="button"
+              className={`recorder-btn${micMuted ? " recorder-btn-mic-muted" : ""}`}
+              onClick={() => void toggleMicrophone()}
+              disabled={micToggleBusy}
+              aria-pressed={micMuted}
+              title={
+                micMuted
+                  ? "Voltar a incluir sua voz na gravação e na transcrição"
+                  : "Não incluir sua voz na gravação nem na transcrição"
+              }
+            >
+              {micMuted ? <MicOff size={12} /> : <Mic size={12} />}
+              {micMuted ? "Ativar microfone" : "Mutar microfone"}
+            </button>
             <div
               style={{
                 flex: 1,
@@ -1038,7 +1127,9 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
       </div>
       {state === "recording" && autoStopSecs > 0 && (
         <span style={{ fontSize: "11px", color: "var(--color-text-muted)" }}>
-          Para sozinha após {Math.round(autoStopSecs / 60)} min de silêncio contínuo.
+          {micMuted && !systemAudio
+            ? "Encerramento automático pausado enquanto o microfone estiver mutado."
+            : `Para sozinha após ${Math.round(autoStopSecs / 60)} min de silêncio contínuo.`}
         </span>
       )}
       {state === "recording" && warning && (

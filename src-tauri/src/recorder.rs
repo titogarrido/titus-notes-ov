@@ -44,6 +44,9 @@ pub struct ActiveRecording {
     warning: Option<String>,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    /// Quando ativo, o stream permanece aberto para preservar o relógio da
+    /// gravação, mas as amostras do microfone são substituídas por silêncio.
+    mic_muted: Arc<AtomicBool>,
     /// Sinalizado pelo mic_monitor quando o app de reunião solta o microfone.
     meeting_stop: Arc<AtomicBool>,
     /// Se false, a gravação ignora o fim de reunião detectado pelo monitor.
@@ -58,6 +61,7 @@ pub struct RecordingStatus {
     pub note_id: String,
     pub elapsed_secs: u64,
     pub system_audio: bool,
+    pub mic_muted: bool,
     pub warning: Option<String>,
 }
 
@@ -126,6 +130,7 @@ pub fn start_recording(
 
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
+    let mic_muted = Arc::new(AtomicBool::new(false));
     let meeting_stop = Arc::new(AtomicBool::new(false));
     let auto_stop = auto_stop_secs
         .filter(|s| *s > 0)
@@ -140,6 +145,7 @@ pub fn start_recording(
     let thread_app = app.clone();
     let thread_stop = stop.clone();
     let thread_cancel = cancel.clone();
+    let thread_mic_muted = mic_muted.clone();
     let thread_meeting_stop = meeting_stop.clone();
     let thread_path = path.clone();
     let thread_filename = filename.clone();
@@ -152,6 +158,7 @@ pub fn start_recording(
             note_id: thread_note_id.clone(),
             stop: thread_stop,
             cancel: thread_cancel,
+            mic_muted: thread_mic_muted,
             meeting_stop: thread_meeting_stop,
             auto_stop,
             want_system_audio,
@@ -204,6 +211,7 @@ pub fn start_recording(
         warning: info.warning.clone(),
         stop,
         cancel,
+        mic_muted,
         meeting_stop,
         stop_on_meeting_end,
         handle,
@@ -214,6 +222,7 @@ pub fn start_recording(
         note_id,
         elapsed_secs: 0,
         system_audio: info.system_audio,
+        mic_muted: false,
         warning: info.warning,
     })
 }
@@ -274,8 +283,23 @@ pub fn recording_status(state: State<RecorderState>) -> Result<Option<RecordingS
         note_id: a.note_id.clone(),
         elapsed_secs: a.started_at.elapsed().as_secs(),
         system_audio: a.system_audio,
+        mic_muted: a.mic_muted.load(Ordering::Relaxed),
         warning: a.warning.clone(),
     }))
+}
+
+/// Silencia ou reativa apenas o canal de microfone gravado pelo Titus Notes.
+/// O dispositivo continua aberto: assim o relógio do arquivo principal não
+/// para e o áudio do sistema permanece alinhado durante o período mutado.
+#[tauri::command]
+pub fn set_microphone_muted(state: State<RecorderState>, muted: bool) -> Result<bool, String> {
+    let guard = state
+        .0
+        .lock()
+        .map_err(|_| "Estado de gravação corrompido".to_string())?;
+    let active = guard.as_ref().ok_or("Nenhuma gravação em andamento")?;
+    active.mic_muted.store(muted, Ordering::Relaxed);
+    Ok(muted)
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +599,7 @@ struct RecordingJob {
     note_id: String,
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    mic_muted: Arc<AtomicBool>,
     meeting_stop: Arc<AtomicBool>,
     auto_stop: Option<Duration>,
     want_system_audio: bool,
@@ -674,6 +699,7 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
     // Processa um lote: mic é o clock mestre; o sistema entra do FIFO (zeros se
     // faltar). Grava os sidecars por canal (microfone pré-mix e sistema alinhado)
     // e o arquivo mixado para playback. Retorna o RMS do mix p/ detecção de silêncio.
+    let mic_muted = job.mic_muted.clone();
     let mut mix_and_encode = |mic_chunk: &mut Vec<f32>,
                               sys_fifo: &mut Vec<f32>,
                               encoder: &mut mp3lame_encoder::Encoder,
@@ -684,6 +710,12 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
      -> Result<f32, String> {
         if mic_chunk.is_empty() {
             return Ok(0.0);
+        }
+        // Não pausamos o stream: o microfone é o relógio mestre da mixagem.
+        // Zerar o lote preserva duração/timestamps e impede que a voz local
+        // chegue ao sidecar, à transcrição ao vivo ou ao MP3 principal.
+        if mic_muted.load(Ordering::Relaxed) {
+            mic_chunk.fill(0.0);
         }
         let n = mic_chunk.len();
         let take = n.min(sys_fifo.len());
@@ -744,7 +776,12 @@ fn run_recording(job: RecordingJob) -> Result<(), String> {
                         &mut total_samples,
                         &live_handle,
                     )?;
-                    if rms < SILENCE_RMS_THRESHOLD {
+                    // Sem áudio do sistema, um mute voluntário produziria
+                    // silêncio artificial e encerraria a gravação sozinho.
+                    // Nesse fallback, pausamos a contagem até o unmute.
+                    if mic_muted.load(Ordering::Relaxed) && !has_system_audio {
+                        silence_since = None;
+                    } else if rms < SILENCE_RMS_THRESHOLD {
                         if silence_since.is_none() {
                             silence_since = Some(Instant::now());
                         }
