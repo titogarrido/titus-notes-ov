@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useApp } from "../context/AppContext";
 import { Note } from "../types";
@@ -153,8 +153,32 @@ export const NotesView: React.FC = () => {
   const [filterTags, setFilterTags] = useState<string[]>([]); // normalizados (interseção)
   const [justCreatedId, setJustCreatedId] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState(false);
+  const viewContainerRef = useRef<HTMLDivElement>(null);
+  const listScrollTopRef = useRef(0);
+  const restoreListScrollRef = useRef(false);
 
   const today = useMemo(() => new Date(), []);
+
+  // A lista e o editor compartilham o mesmo contêiner rolável. Ao abrir uma
+  // nota, o conteúdo da lista é desmontado e o scroll é limitado a zero.
+  // Guardamos a posição somente para navegações iniciadas pela própria lista,
+  // evitando restaurar um valor antigo ao chegar por busca, painel etc.
+  const rememberListScroll = () => {
+    listScrollTopRef.current = viewContainerRef.current?.scrollTop ?? 0;
+    restoreListScrollRef.current = true;
+  };
+
+  const openNoteFromList = (noteId: string) => {
+    rememberListScroll();
+    setSelectedEntityId(noteId);
+  };
+
+  useLayoutEffect(() => {
+    if (selectedEntityId || !restoreListScrollRef.current) return;
+    const container = viewContainerRef.current;
+    if (container) container.scrollTop = listScrollTopRef.current;
+    restoreListScrollRef.current = false;
+  }, [selectedEntityId]);
 
   // Auto-focus + select-all in title when a freshly created note is opened
   useEffect(() => {
@@ -448,7 +472,10 @@ export const NotesView: React.FC = () => {
   // ---------- render ----------
 
   return (
-    <div className={`view-container ${selectedEntityId ? "note-editing-mode" : ""}`}>
+    <div
+      ref={viewContainerRef}
+      className={`view-container ${selectedEntityId ? "note-editing-mode" : ""}`}
+    >
       {!selectedEntityId ? (
         /* ====================== LIST VIEW ====================== */
         <div>
@@ -780,7 +807,7 @@ export const NotesView: React.FC = () => {
                           onClick={() =>
                             selectionMode
                               ? toggleNoteSelected(note.id)
-                              : setSelectedEntityId(note.id)
+                              : openNoteFromList(note.id)
                           }
                           style={
                             selectionMode && isSelected
