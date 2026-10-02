@@ -397,8 +397,8 @@ O painel permite ouvir até oito segundos de uma voz, editar seu nome ou escolhe
 uma pessoa cadastrada. A seleção de pessoa também a adiciona aos participantes.
 Alterações atualizam apenas os cabeçalhos conhecidos, preservando o texto editado
 manualmente. **Sou eu** gera a transcrição própria para os itens de ação, excluindo
-falas sobrepostas. As identidades são locais a cada gravação; não há reconhecimento
-automático de nomes entre reuniões. A diarização melhora a atribuição de falas,
+falas sobrepostas. Perfis de voz opcionais permitem reconhecer pessoas entre
+reuniões (detalhes abaixo). A diarização melhora a atribuição de falas,
 sem prometer corrigir palavras reconhecidas incorretamente ou separar áudio sobreposto.
 
 O helper é compilado por `src-tauri/build.rs` e embutido no binário do app; usuários
@@ -408,6 +408,40 @@ revisão e licença preservadas em `src-tauri/diarization/vendor/NOTICE` e `LICE
 Os pesos vêm do [bundle Core ML](https://huggingface.co/aufklarer/Nemotron-3-Diarization-100M-CoreML-INT8);
 `model-manifest.json` fixa a revisão e os tamanhos. Downloads são temporários e
 só substituem arquivos completos; o PCM temporário é removido ao terminar ou cancelar.
+
+### Perfis de voz entre notas
+
+No painel da transcrição, **Baixar reconhecimento** instala o modelo local
+[ReDimNet2-B6 Core ML](https://huggingface.co/aufklarer/ReDimNet2-B6-CoreML)
+(~25 MB). A revisão está fixada em `voice-model-manifest.json`. Depois de diarizar,
+ouça cada interlocutor, selecione uma pessoa cadastrada, marque **Sou eu** se
+aplicável e clique em **Salvar perfil de voz**. Notas já diarizadas também podem
+fornecer uma amostra, sem substituir a transcrição. A inferência usa o helper
+embutido, sem upload de áudio ou acesso à rede após baixar os modelos.
+
+`person.voiceProfile` guarda até cinco assinaturas normalizadas de 192 dimensões,
+obtidas de gravações explicitamente confirmadas. Cada gravação contribui com
+uma amostra de 2–6 segundos sem outra voz simultânea; os limites dos turnos recebem
+uma margem de 150 ms. Não há cadastro a partir de trechos curtos ou sobrepostos.
+Salvar novamente a mesma gravação substitui a amostra. **Atualizar perfil de voz**
+incorpora amostras de outras reuniões, preservando edições no cadastro da pessoa.
+A tela da pessoa permite remover o perfil. Os perfis fazem parte do banco local
+e dos backups existentes; não dependem da retenção dos arquivos de áudio.
+
+Nas próximas diarizações, `note.diarization.speakers[].voiceSignature` é comparada
+com os perfis atuais de todas as pessoas cadastradas. Similaridade cosseno >= 0,80,
+margem >= 0,10 sobre a segunda pessoa e pelo menos 3 s de amostra permitem aplicar
+o nome automaticamente. A partir de 0,55, resultados incertos são sugestões que
+exigem confirmação. São parâmetros conservadores iniciais, não probabilidades
+nem garantia de acerto; microfone, idioma e ruído podem afetar o reconhecimento.
+Duas vozes simultâneas atribuídas à mesma pessoa exigem revisão. O usuário pode
+corrigir qualquer associação. Nenhuma detecção atualiza um perfil automaticamente.
+Se o modelo falhar, o app preserva a diarização e informa que não reconheceu as vozes.
+
+Comandos: `voice_identity_model_status`, `download_voice_identity_model`,
+`cancel_voice_identity_model_download`, `voice_profile_sample`. Downloads usam
+`voice-identity-model-*`. Extração e diarização compartilham o bloqueio de áudio,
+a fase `identifying` e o cancelamento via `cancel_transcription`.
 
 Comandos novos: `diarization_model_status`, `download_diarization_model`,
 `cancel_diarization_model_download`, `diarize_audio`. O job compartilha o bloqueio

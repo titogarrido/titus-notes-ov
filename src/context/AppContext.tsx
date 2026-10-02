@@ -15,8 +15,10 @@ import {
   ImportedHyprnoteSession,
   AudioCleanupResult,
   Diarization,
+  VoiceSignature,
 } from "../types";
-import { renderDiarizedTranscript } from "../lib/diarization";
+import { renderDiarizedTranscript, renderSelfTranscript } from "../lib/diarization";
+import { enrollVoiceProfile, matchVoiceProfiles, validVoiceSignature } from "../lib/voiceProfiles";
 import { buildImportReport, ImportReport } from "../lib/hyprnoteImport";
 import { loadAutoStopSecs } from "../lib/recorderPrefs";
 
@@ -126,6 +128,8 @@ interface AppContextType {
   addPerson: (person: Omit<Person, "id">) => Promise<string>;
   updatePerson: (person: Person) => Promise<void>;
   deletePerson: (id: string) => Promise<void>;
+  saveVoiceProfile: (noteId: string, filename: string, speakerId: number, personId: string) => Promise<void>;
+  removeVoiceProfile: (personId: string) => Promise<void>;
   
   addProject: (project: Omit<Project, "id">) => Promise<string>;
   updateProject: (project: Project) => Promise<void>;
@@ -179,6 +183,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     settings: DEFAULT_SETTINGS,
     templates: [],
   });
+  const dbRef = useRef(db);
   const [loading, setLoading] = useState<boolean>(true);
   const [currentView, setCurrentView] = useState<string>("painel");
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
@@ -198,6 +203,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           invoke<Database>("load_db"),
           invoke<DataRootInfo>("get_data_root_info").catch(() => null),
         ]);
+        dbRef.current = data;
         setDb(data);
         if (info) setDataRootState(info);
       } catch (err) {
@@ -278,6 +284,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const info = await invoke<DataRootInfo>("set_data_root", { path, migrate });
     setDataRootState(info);
     const data = await invoke<Database>("load_db");
+    dbRef.current = data;
     setDb(data);
     return info;
   };
@@ -286,22 +293,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // que duas invocações concorrentes terminem em ordem trocada no Rust
   // (o que pode "ressuscitar" uma nota deletada).
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const saveDatabase = async (mutator: (prev: Database) => Database) => {
-    let computed!: Database;
-    setDb((prev) => {
-      computed = mutator(prev);
-      return computed;
-    });
-    const previous = saveQueueRef.current;
-    const next = previous
-      .catch(() => undefined)
+  const saveDatabase = async (mutator: (prev: Database) => Database, strict = false) => {
+    // Compute before scheduling React's render: background identity events and
+    // manual edits can otherwise persist an undefined/stale snapshot.
+    const previousDb = dbRef.current;
+    const computed = mutator(previousDb);
+    dbRef.current = computed;
+    setDb(computed);
+    const next = saveQueueRef.current.catch(() => undefined)
       .then(() => invoke("save_db", { data: computed }))
-      .then(() => undefined)
-      .catch((err) => {
-        console.error("Erro ao salvar o banco de dados:", err);
-      });
-    saveQueueRef.current = next;
-    return next;
+      .then(() => undefined);
+    saveQueueRef.current = next.catch((err) => { console.error("Erro ao salvar o banco de dados:", err); });
+    if (strict) {
+      try { await next; }
+      catch (error) {
+        if (dbRef.current === computed) { dbRef.current = previousDb; setDb(previousDb); }
+        throw error;
+      }
+    } else await saveQueueRef.current;
   };
 
   // --- Detecção de reunião: app externo começou/parou de usar o microfone ---
@@ -474,12 +483,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let disposed = false;
     let unlisten: (() => void) | undefined;
     listen<{ noteId: string; filename: string; diarization: Diarization }>("diarization-finished", async ({ payload }) => {
-      await saveDatabase((prev) => ({
-        ...prev,
-        notes: prev.notes.map((note) => note.id === payload.noteId && note.audioFile === payload.filename
-          ? { ...note, diarization: payload.diarization, transcript: renderDiarizedTranscript(payload.diarization), updatedAt: new Date().toISOString() }
-          : note),
-      }));
+      await saveDatabase((prev) => {
+        const diarization = matchVoiceProfiles(payload.diarization, prev.people);
+        const transcript = renderDiarizedTranscript(diarization);
+        const notes = prev.notes.map((note) => note.id === payload.noteId && note.audioFile === payload.filename
+          ? { ...note, diarization, transcript,
+            ...(diarization.speakers.some((speaker) => speaker.isSelf) || note.diarization?.speakers.some((speaker) => speaker.isSelf) ? { selfTranscript: renderSelfTranscript(diarization, transcript) } : {}),
+            peopleIds: [...new Set([...note.peopleIds, ...diarization.speakers.flatMap((speaker) => speaker.personId ? [speaker.personId] : [])])],
+            updatedAt: new Date().toISOString() }
+          : note);
+        return { ...prev, notes, projects: recomputeProjectPeople(prev.projects, notes, [notes.find((note) => note.id === payload.noteId)?.projectId]) };
+      });
     }).then((u) => { if (disposed) u(); else unlisten = u; });
     return () => { disposed = true; unlisten?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -598,8 +612,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updatePerson = async (updatedPerson: Person) => {
     await saveDatabase((prev) => ({
       ...prev,
-      people: prev.people.map((p) => (p.id === updatedPerson.id ? updatedPerson : p)),
+      people: prev.people.map((p) => (p.id === updatedPerson.id ? { ...updatedPerson, voiceProfile: p.voiceProfile } : p)),
     }));
+  };
+
+  const saveVoiceProfile = async (noteId: string, filename: string, speakerId: number, personId: string) => {
+    const note = dbRef.current.notes.find((n) => n.id === noteId && n.audioFile === filename);
+    const speaker = note?.diarization?.speakers.find((s) => s.id === speakerId && s.personId === personId);
+    if (!speaker || !note?.diarization) throw new Error("Selecione uma pessoa para este interlocutor antes de salvar o perfil.");
+    const profileAtStart = dbRef.current.people.find((p) => p.id === personId)?.voiceProfile;
+    const signature = validVoiceSignature(speaker.voiceSignature) ? speaker.voiceSignature : await invoke<VoiceSignature>("voice_profile_sample", {
+      noteId, filename, speakerId, turns: note.diarization.turns,
+    });
+    await saveDatabase((prev) => prev.people.find((p) => p.id === personId)?.voiceProfile !== profileAtStart
+      ? prev : enrollVoiceProfile(prev, noteId, filename, speakerId, personId, signature, new Date().toISOString()), true);
+  };
+  const removeVoiceProfile = async (personId: string) => {
+    await saveDatabase((prev) => ({ ...prev,
+      people: prev.people.map((p) => p.id === personId ? { ...p, voiceProfile: null } : p),
+      notes: prev.notes.map((n) => n.diarization ? { ...n, diarization: { ...n.diarization, speakers: n.diarization.speakers.map((speaker) => speaker.personId === personId || speaker.voiceMatch?.personId === personId
+        ? { ...speaker, voiceSignature: null, voiceMatch: null } : speaker) } } : n),
+    }), true);
   };
 
   const deletePerson = async (id: string) => {
@@ -613,6 +646,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notes: prev.notes.map((n) => ({
         ...n,
         peopleIds: n.peopleIds.filter((pid) => pid !== id),
+        ...(n.diarization ? { diarization: { ...n.diarization, speakers: n.diarization.speakers.map((speaker) => speaker.personId === id || speaker.voiceMatch?.personId === id
+          ? { ...speaker, personId: speaker.personId === id ? null : speaker.personId, voiceMatch: null, voiceSignature: null } : speaker) } } : {}),
       })),
       tasks: prev.tasks.map((t) => (t.personId === id ? { ...t, personId: null } : t)),
     }));
@@ -1055,6 +1090,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const reloadDb = async () => {
     try {
       const data = await invoke<Database>("load_db");
+      dbRef.current = data;
       setDb(data);
     } catch (err) {
       console.error("Erro ao recarregar o banco de dados:", err);
@@ -1120,6 +1156,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addPerson,
         updatePerson,
         deletePerson,
+        saveVoiceProfile,
+        removeVoiceProfile,
         addProject,
         updateProject,
         deleteProject,

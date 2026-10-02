@@ -245,6 +245,9 @@ const TranscribeControl: React.FC<{
       }),
     );
     track(
+      listen("voice-profile-sample-finished", () => { setJob(null); setBusy(false); }),
+    );
+    track(
       listen("diarization-finished", () => { setJob(null); setBusy(false); }),
     );
     track(
@@ -343,7 +346,7 @@ const TranscribeControl: React.FC<{
             <span style={{ fontSize: "12px", fontWeight: 600 }}>
               {job.phase === "decoding"
                 ? `Preparando áudio…${job.processedSecs > 0 ? ` ${formatElapsed(Math.floor(job.processedSecs))}` : ""}`
-                : `${job.phase === "diarizing" ? "Separando vozes" : "Transcrevendo"}… ${formatElapsed(Math.floor(job.processedSecs))} / ${formatElapsed(Math.floor(job.totalSecs))}`}
+                : `${job.phase === "diarizing" ? "Separando vozes" : job.phase === "identifying" ? "Reconhecendo vozes" : "Transcrevendo"}… ${formatElapsed(Math.floor(job.processedSecs))} / ${formatElapsed(Math.floor(job.totalSecs))}`}
             </span>
             <div
               style={{
@@ -1276,7 +1279,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   initialQuery,
   propertiesPanel,
 }) => {
-  const { db, setCurrentView, setSelectedEntityId, liveTranscribingNoteId } = useApp();
+  const { db, setCurrentView, setSelectedEntityId, liveTranscribingNoteId, saveVoiceProfile } = useApp();
   const isReadyRef = useRef(false);
   const transcriptRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -1359,6 +1362,11 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   // uma textarea controlada pelo db "engoliria" teclas até o flush. O
   // componente remonta por nota (key={note.id}), então iniciar do prop basta.
   const [localTranscript, setLocalTranscript] = useState(transcript || "");
+  useEffect(() => {
+    if (document.activeElement !== transcriptRef.current) setLocalTranscript(transcript || "");
+    // Identity results are persisted globally even when the panel was unmounted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diarization]);
   // Guarda em ref para NÃO causar re-render a cada keystroke (isso quebrava o
   // plugin de menção "@" que recebia novas referências de props e resetava
   // o estado interno). O display é atualizado por um tick.
@@ -1741,6 +1749,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
               audioRef={audioRef}
               onTranscript={setLocalTranscript}
               onChange={onDiarizationChange}
+              onSaveVoiceProfile={(speakerId, personId) => saveVoiceProfile(noteId, audioFile, speakerId, personId)}
               onProcessingChange={setProcessingAudio}
               onBeforeProcess={onBeforeAudioProcess}
             />

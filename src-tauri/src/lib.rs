@@ -1,5 +1,6 @@
 mod codex_auth;
 mod diarizer;
+mod voice_identity;
 mod mic_monitor;
 mod recorder;
 pub mod transcriber;
@@ -25,6 +26,8 @@ pub struct Person {
     pub is_contact: bool,
     #[serde(default)]
     pub ai_profile: Option<AIPersonProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_profile: Option<voice_identity::VoiceProfile>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1377,6 +1380,7 @@ pub fn run() {
         .manage(recorder::RecorderState(std::sync::Mutex::new(None)))
         .manage(transcriber::TranscriberState::default())
         .manage(diarizer::DiarizerState::default())
+        .manage(voice_identity::VoiceIdentityState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1446,6 +1450,10 @@ pub fn run() {
             diarizer::download_diarization_model,
             diarizer::cancel_diarization_model_download,
             diarizer::diarize_audio,
+            voice_identity::voice_identity_model_status,
+            voice_identity::download_voice_identity_model,
+            voice_identity::cancel_voice_identity_model_download,
+            voice_identity::voice_profile_sample,
             codex_auth::codex_login_start,
             codex_auth::codex_login_complete,
             codex_auth::codex_auth_status,

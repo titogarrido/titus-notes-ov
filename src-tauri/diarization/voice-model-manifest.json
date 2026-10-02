@@ -1,0 +1,30 @@
+{
+  "repository": "aufklarer/ReDimNet2-B6-CoreML",
+  "revision": "1272aa380f6b47540cce2ccfe9cca34182a3228e",
+  "files": [
+    {
+      "path": "LICENSE",
+      "size": 1067
+    },
+    {
+      "path": "ReDimNet2B6.mlmodelc/analytics/coremldata.bin",
+      "size": 243
+    },
+    {
+      "path": "ReDimNet2B6.mlmodelc/coremldata.bin",
+      "size": 518
+    },
+    {
+      "path": "ReDimNet2B6.mlmodelc/model.mil",
+      "size": 507138
+    },
+    {
+      "path": "ReDimNet2B6.mlmodelc/weights/weight.bin",
+      "size": 25423808
+    },
+    {
+      "path": "config.json",
+      "size": 931
+    }
+  ]
+}

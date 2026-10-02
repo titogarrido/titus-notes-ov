@@ -23,15 +23,15 @@ pub struct DiarizerState {
 }
 
 #[derive(Deserialize)]
-struct Manifest {
-    repository: String,
-    revision: String,
-    files: Vec<ModelFile>,
+pub(crate) struct Manifest {
+    pub(crate) repository: String,
+    pub(crate) revision: String,
+    pub(crate) files: Vec<ModelFile>,
 }
 #[derive(Deserialize)]
-struct ModelFile {
-    path: String,
-    size: u64,
+pub(crate) struct ModelFile {
+    pub(crate) path: String,
+    pub(crate) size: u64,
 }
 fn manifest() -> Manifest {
     serde_json::from_str(include_str!("../diarization/model-manifest.json"))
@@ -49,7 +49,7 @@ fn model_dir(app: &AppHandle) -> Result<PathBuf, String> {
 #[serde(rename_all = "camelCase")]
 pub struct ModelStatus {
     supported: bool,
-    ready: bool,
+    pub(crate) ready: bool,
     downloading: bool,
     bytes_on_disk: u64,
     total_bytes: u64,
@@ -60,21 +60,30 @@ pub fn diarization_model_status(
     app: AppHandle,
     state: State<'_, DiarizerState>,
 ) -> Result<ModelStatus, String> {
-    let dir = model_dir(&app)?;
-    let files = manifest().files;
-    let ready = files
-        .iter()
-        .all(|f| fs::metadata(dir.join(&f.path)).is_ok_and(|m| m.is_file() && m.len() == f.size));
-    let bytes_on_disk = files
-        .iter()
-        .filter_map(|f| fs::metadata(dir.join(&f.path)).ok())
-        .map(|m| m.len())
-        .sum();
+    model_status(
+        &model_dir(&app)?,
+        &manifest(),
+        state.downloading.load(Ordering::SeqCst),
+    )
+}
+
+pub(crate) fn model_status(
+    dir: &std::path::Path,
+    manifest: &Manifest,
+    downloading: bool,
+) -> Result<ModelStatus, String> {
+    let files = &manifest.files;
     Ok(ModelStatus {
         supported: cfg!(target_os = "macos"),
-        ready,
-        downloading: state.downloading.load(Ordering::SeqCst),
-        bytes_on_disk,
+        ready: files.iter().all(|f| {
+            fs::metadata(dir.join(&f.path)).is_ok_and(|m| m.is_file() && m.len() == f.size)
+        }),
+        downloading,
+        bytes_on_disk: files
+            .iter()
+            .filter_map(|f| fs::metadata(dir.join(&f.path)).ok())
+            .map(|m| m.len())
+            .sum(),
         total_bytes: files.iter().map(|f| f.size).sum(),
     })
 }
@@ -102,7 +111,19 @@ pub fn download_diarization_model(
     state.cancel_download.store(false, Ordering::SeqCst);
     tauri::async_runtime::spawn(async move {
         let state = app.state::<DiarizerState>();
-        let result = download_model(&app, &state).await;
+        let result = match model_dir(&app) {
+            Ok(dir) => {
+                download_model(
+                    &app,
+                    manifest(),
+                    dir,
+                    &state.cancel_download,
+                    "diarization-model-progress",
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        };
         state.downloading.store(false, Ordering::SeqCst);
         match result {
             Ok(()) => {
@@ -119,9 +140,13 @@ pub fn download_diarization_model(
     Ok(())
 }
 
-async fn download_model(app: &AppHandle, state: &DiarizerState) -> Result<(), String> {
-    let manifest = manifest();
-    let dir = model_dir(app)?;
+pub(crate) async fn download_model(
+    app: &AppHandle,
+    manifest: Manifest,
+    dir: PathBuf,
+    cancel: &AtomicBool,
+    event: &str,
+) -> Result<(), String> {
     let total: u64 = manifest.files.iter().map(|f| f.size).sum();
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -130,7 +155,7 @@ async fn download_model(app: &AppHandle, state: &DiarizerState) -> Result<(), St
         .map_err(|e| e.to_string())?;
     let mut downloaded = 0;
     for file in &manifest.files {
-        if state.cancel_download.load(Ordering::SeqCst) {
+        if cancel.load(Ordering::SeqCst) {
             return Err("Download cancelado.".into());
         }
         let dest = dir.join(&file.path);
@@ -148,7 +173,7 @@ async fn download_model(app: &AppHandle, state: &DiarizerState) -> Result<(), St
                 tokio::select! {
                     result = &mut request => break result.map_err(|e| e.to_string())?.error_for_status().map_err(|e| e.to_string())?,
                     _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                        if state.cancel_download.load(Ordering::SeqCst) { return Err("Download cancelado.".to_string()); }
+                        if cancel.load(Ordering::SeqCst) { return Err("Download cancelado.".to_string()); }
                     }
                 }
             };
@@ -157,7 +182,7 @@ async fn download_model(app: &AppHandle, state: &DiarizerState) -> Result<(), St
             let mut count = 0;
             let mut last = std::time::Instant::now();
             loop {
-                if state.cancel_download.load(Ordering::SeqCst) { return Err("Download cancelado.".to_string()); }
+                if cancel.load(Ordering::SeqCst) { return Err("Download cancelado.".to_string()); }
                 let chunk = tokio::select! {
                     chunk = stream.next() => match chunk { Some(chunk) => chunk, None => break },
                     _ = tokio::time::sleep(Duration::from_millis(100)) => continue,
@@ -167,7 +192,7 @@ async fn download_model(app: &AppHandle, state: &DiarizerState) -> Result<(), St
                 count += bytes.len() as u64;
                 if count > file.size { return Err(format!("Tamanho inválido: {}", file.path)); }
                 if last.elapsed() >= Duration::from_millis(150) {
-                    let _ = app.emit("diarization-model-progress", serde_json::json!({"downloaded": downloaded + count, "total": total}));
+                    let _ = app.emit(event, serde_json::json!({"downloaded": downloaded + count, "total": total}));
                     last = std::time::Instant::now();
                 }
             }
@@ -183,7 +208,7 @@ async fn download_model(app: &AppHandle, state: &DiarizerState) -> Result<(), St
         result?;
         downloaded += file.size;
         let _ = app.emit(
-            "diarization-model-progress",
+            event,
             serde_json::json!({"downloaded": downloaded, "total": total}),
         );
     }
@@ -199,6 +224,10 @@ pub struct Speaker {
     pub person_id: Option<String>,
     #[serde(default)]
     pub is_self: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_signature: Option<crate::voice_identity::VoiceSignature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_match: Option<serde_json::Value>,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +252,8 @@ pub struct Diarization {
     pub speakers: Vec<Speaker>,
     pub turns: Vec<VoiceTurn>,
     pub segments: Vec<TranscriptSegment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_warning: Option<String>,
 }
 
 #[tauri::command]
@@ -384,16 +415,35 @@ fn run(
     let mut ids = turns.iter().map(|t| t.speaker_id).collect::<Vec<_>>();
     ids.sort_unstable();
     ids.dedup();
-    let speakers = ids
+    let mut speakers: Vec<Speaker> = ids
         .into_iter()
         .map(|id| Speaker {
             id,
             name: format!("Interlocutor {}", id + 1),
             person_id: None,
             is_self: false,
+            voice_signature: None,
+            voice_match: None,
         })
         .collect();
+    let mut identity_warning = None;
+    if crate::voice_identity::ready(app)? {
+        progress(app, state, note, filename, "identifying", 0.0, total);
+        match crate::voice_identity::signatures(app, state, &samples, &turns) {
+            Ok(signatures) => {
+                for speaker in &mut speakers {
+                    speaker.voice_signature = signatures.get(&speaker.id).cloned();
+                }
+            }
+            Err(error) => {
+                check_cancel(state)?;
+                identity_warning = Some(format!("Reconhecimento de voz indisponível: {error}"));
+            }
+        }
+    }
+    check_cancel(state)?;
     Ok(Diarization {
+        identity_warning,
         filename: filename.into(),
         model: MODEL_NAME.into(),
         speakers,
@@ -496,13 +546,34 @@ impl Drop for TemporaryAudio {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn infer_voices(
     app: &AppHandle,
     state: &TranscriberState,
     samples: &[f32],
-    mut on_progress: impl FnMut(f32),
+    on_progress: impl FnMut(f32),
 ) -> Result<Vec<VoiceTurn>, String> {
+    let value = run_coreml(
+        app,
+        state,
+        samples,
+        &model_dir(app)?,
+        &[],
+        "segments",
+        on_progress,
+    )?;
+    serde_json::from_value(value).map_err(|e| format!("Intervalos Core ML inválidos: {e}"))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn run_coreml(
+    app: &AppHandle,
+    state: &TranscriberState,
+    samples: &[f32],
+    model: &std::path::Path,
+    args: &[String],
+    result_key: &str,
+    mut on_progress: impl FnMut(f32),
+) -> Result<serde_json::Value, String> {
     use std::os::unix::fs::PermissionsExt;
     let cache = app
         .path()
@@ -542,8 +613,9 @@ fn infer_voices(
     }
     check_cancel(state)?;
     let mut child = Command::new(helper)
-        .arg(model_dir(app)?)
+        .arg(model)
         .arg(&audio.0)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -562,7 +634,7 @@ fn infer_voices(
             }
         }
     });
-    let mut turns = None;
+    let mut result = None;
     let mut error = None;
     loop {
         if state.cancel.load(Ordering::SeqCst) {
@@ -580,8 +652,8 @@ fn infer_voices(
                     if let Some(message) = value["error"].as_str() {
                         error = Some(message.to_string());
                     }
-                    if let Some(segments) = value.get("segments") {
-                        turns = serde_json::from_value(segments.clone()).ok();
+                    if let Some(segments) = value.get(result_key) {
+                        result = Some(segments.clone());
                     }
                 }
             }
@@ -595,15 +667,18 @@ fn infer_voices(
     if !status.success() {
         return Err(error.unwrap_or_else(|| format!("Core ML terminou com erro ({status}).")));
     }
-    turns.ok_or_else(|| "O modelo de diarização não retornou intervalos válidos.".into())
+    result.ok_or_else(|| "O modelo Core ML não retornou um resultado válido.".into())
 }
 #[cfg(not(target_os = "macos"))]
-fn infer_voices(
+pub(crate) fn run_coreml(
     _: &AppHandle,
     _: &TranscriberState,
     _: &[f32],
+    _: &std::path::Path,
+    _: &[String],
+    _: &str,
     _: impl FnMut(f32),
-) -> Result<Vec<VoiceTurn>, String> {
+) -> Result<serde_json::Value, String> {
     Err("Core ML requer macOS.".into())
 }
 
@@ -661,6 +736,7 @@ mod tests {
         })).unwrap();
         assert!(note.diarization.is_none());
         note.diarization = Some(Diarization {
+            identity_warning: None,
             filename: "test.mp3".into(),
             model: MODEL_NAME.into(),
             speakers: vec![Speaker {
@@ -668,6 +744,8 @@ mod tests {
                 name: "Ana".into(),
                 person_id: Some("person-1".into()),
                 is_self: true,
+                voice_signature: None,
+                voice_match: None,
             }],
             turns: vec![VoiceTurn {
                 start: 0.0,

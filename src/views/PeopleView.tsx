@@ -45,6 +45,7 @@ export const PeopleView: React.FC = () => {
     addPerson,
     updatePerson,
     deletePerson,
+    removeVoiceProfile,
     setCurrentView,
     updateTask,
   } = useApp();
@@ -53,6 +54,8 @@ export const PeopleView: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [generatingProfile, setGeneratingProfile] = useState(false);
+  const [voiceProfileError, setVoiceProfileError] = useState<string | null>(null);
+  const [removingVoice, setRemovingVoice] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
 
   // List filters — a empresa padrão (se existir) é o filtro inicial.
@@ -183,6 +186,7 @@ export const PeopleView: React.FC = () => {
       setIsCreating(false);
     } else if (isEditing && selectedEntityId) {
       await updatePerson({
+        ...selectedPerson,
         ...personData,
         id: selectedEntityId,
       });
@@ -1170,6 +1174,21 @@ export const PeopleView: React.FC = () => {
                         </p>
                       </div>
                     )}
+
+                    <div className="profile-section-item">
+                      <h3 className="profile-section-title">Perfil de voz</h3>
+                      {selectedPerson.voiceProfile?.samples.length ? <>
+                        <p style={{ fontSize: 13, lineHeight: 1.5 }}>Reconhecimento local ativado · {selectedPerson.voiceProfile.samples.length} gravação(ões) confirmada(s){selectedPerson.voiceProfile.isSelf ? " · Sou eu" : ""}.</p>
+                        <button type="button" className="btn-secondary" disabled={removingVoice} onClick={async () => {
+                          setVoiceProfileError(null); setRemovingVoice(true);
+                          try { await removeVoiceProfile(selectedPerson.id); }
+                          catch (error) { setVoiceProfileError(String(error)); }
+                          finally { setRemovingVoice(false); }
+                        }}>{removingVoice ? "Removendo…" : "Remover perfil de voz"}</button>
+                      </> : <p style={{ fontSize: 13, lineHeight: 1.5 }}>Para reconhecer esta pessoa nas próximas notas, selecione-a na transcrição diarizada e clique em “Salvar perfil de voz”.</p>}
+                    </div>
+
+                    {voiceProfileError && <p role="alert" style={{ color: "#cf222e" }}>{voiceProfileError}</p>}
 
                     {/* Actions */}
                     <div className="profile-section-item" style={{ display: "flex", gap: "12px", borderTop: "1px solid var(--border-color)", paddingTop: "20px", alignItems: "center" }}>

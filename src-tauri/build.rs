@@ -22,6 +22,7 @@ fn main() {
             .collect::<Vec<_>>();
         sources.sort();
         sources.push(source_dir.join("Main.swift"));
+        sources.push(source_dir.join("VoiceIdentity.swift"));
         let status = std::process::Command::new("xcrun")
             .args([
                 "swiftc",

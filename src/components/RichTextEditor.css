@@ -1305,3 +1305,16 @@
 }
 .diarization-speaker label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .diarization-overlap-note { margin-bottom: 0; font-size: 11px; }
+
+.diarization-voice-model, .diarization-voice-profile {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+.diarization-voice-model { margin-top: 10px; }
+.diarization-voice-model > span:first-of-type { flex: 1; min-width: 200px; }
+.diarization-voice-profile { flex-basis: 100%; padding-left: 32px; margin-bottom: 6px; }
+.voice-profile-status { display: inline-flex; align-items: center; gap: 4px; color: #18724a; }

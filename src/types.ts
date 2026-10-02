@@ -12,6 +12,7 @@ export interface Person {
   /** Observações livres sobre a pessoa (anotações manuais). */
   observations?: string;
   aiProfile?: AIPersonProfile;
+  voiceProfile?: VoiceProfile | null;
 }
 
 export interface AIPersonProfile {
@@ -111,11 +112,30 @@ export interface Note {
   tags?: string[];
 }
 
+export interface VoiceSignature {
+  model: string;
+  embedding: number[];
+  duration: number;
+}
+export interface VoiceProfile {
+  model: string;
+  samples: (VoiceSignature & { sourceNoteId: string; filename: string; createdAt: string })[];
+  isSelf: boolean;
+  updatedAt: string;
+}
+export interface VoiceMatch {
+  personId: string;
+  similarity: number;
+  status: "automatic" | "suggested" | "confirmed";
+}
+
 export interface DiarizationSpeaker {
   id: number;
   name: string;
   personId?: string | null;
   isSelf: boolean;
+  voiceSignature?: VoiceSignature | null;
+  voiceMatch?: VoiceMatch | null;
 }
 
 export interface DiarizationTurn {
@@ -137,6 +157,7 @@ export interface Diarization {
   speakers: DiarizationSpeaker[];
   turns: DiarizationTurn[];
   segments: DiarizationSegment[];
+  identityWarning?: string | null;
 }
 
 export type AiProvider = "ollama" | "openai" | "codex";
@@ -275,7 +296,7 @@ export interface TranscriptionModelStatus {
 export interface ActiveTranscription {
   noteId: string;
   filename: string;
-  phase: "decoding" | "diarizing" | "transcribing";
+  phase: "decoding" | "diarizing" | "transcribing" | "identifying";
   processedSecs: number;
   totalSecs: number;
 }
