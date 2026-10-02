@@ -191,7 +191,7 @@ export function buildActionItemsPrompt(
     : "";
   // O canal do microfone identifica, sem ambiguidade, o que VOCÊ falou.
   const selfBlock = selfTranscript && selfTranscript.trim()
-    ? `\n\nTrechos ditos por VOCÊ (capturados pelo seu microfone — tudo aqui foi falado por você):\n"""\n${selfTranscript.trim()}\n"""`
+    ? `\n\nTrechos ditos por VOCÊ (atribuídos ao seu microfone ou à voz que você identificou — tudo aqui foi falado por você):\n"""\n${selfTranscript.trim()}\n"""`
     : "";
   // Instruções livres do usuário para focar/filtrar a extração (sem quebrar o
   // contrato de saída JSON).

@@ -85,14 +85,14 @@ pub struct TranscriptionModelStatus {
 /// Os modelos ficam sempre no app data padrão (nunca na pasta de dados
 /// customizada, que pode estar em um drive sincronizado — 670 MB lá seria
 /// desperdício de banda do usuário).
-fn get_model_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn get_model_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let mut path = app.path().app_data_dir().map_err(|e| e.to_string())?;
     path.push("models");
     path.push(MODEL_DIR_NAME);
     Ok(path)
 }
 
-fn model_status_internal(app: &AppHandle, state: &TranscriberState) -> Result<TranscriptionModelStatus, String> {
+pub(crate) fn model_status_internal(app: &AppHandle, state: &TranscriberState) -> Result<TranscriptionModelStatus, String> {
     let dir = get_model_dir(app)?;
     let mut missing: Vec<String> = Vec::new();
     let mut bytes: u64 = 0;
@@ -306,6 +306,9 @@ pub fn transcribe_audio(
 ) -> Result<(), String> {
     if !crate::is_safe_filename(&filename) {
         return Err("Invalid filename".to_string());
+    }
+    if app.state::<crate::recorder::RecorderState>().0.lock().map_err(|e| e.to_string())?.is_some() {
+        return Err("Finalize a gravação antes de processar o áudio.".to_string());
     }
 
     let status = model_status_internal(&app, &state)?;
@@ -977,7 +980,7 @@ fn update_progress(
 /// (ataque rápido ao chegar som alto, release lento — evita "pumping").
 ///
 /// Constantes conservadoras e fáceis de calibrar.
-fn agc_normalize(samples: &mut [f32]) {
+pub(crate) fn agc_normalize(samples: &mut [f32]) {
     const FRAME: usize = 480; // 30 ms @ 16 kHz
     const TARGET_RMS: f32 = 0.1; // ~ -20 dBFS
     const NOISE_FLOOR_RMS: f32 = 0.006; // abaixo disso: silêncio/ruído → ganho 1.0
@@ -1025,7 +1028,7 @@ fn agc_normalize(samples: &mut [f32]) {
 /// Procura, em ± `search` amostras ao redor de `target`, o frame de 30 ms com
 /// menor energia RMS — corta a fatia numa pausa natural em vez de no meio de
 /// uma palavra.
-fn find_quiet_split(samples: &[f32], target: usize, search: usize) -> usize {
+pub(crate) fn find_quiet_split(samples: &[f32], target: usize, search: usize) -> usize {
     let start = target.saturating_sub(search) / ENERGY_FRAME * ENERGY_FRAME;
     let end = (target + search).min(samples.len());
 

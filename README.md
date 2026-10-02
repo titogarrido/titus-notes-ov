@@ -44,6 +44,10 @@ sem servidor.
   mistura) e mesclados por tempo, marcando **(Você)** e **(Outros)**. Isso garante que a
   voz remota apareça no texto e dá atribuição de quem falou de graça
 - Limpeza automática de áudios antigos (por idade, agendável)
+- **Diarização local com Nemotron 3 (Core ML)**: na aba Transcrição de uma nota
+  com áudio finalizado, separa até oito vozes e permite ouvir um trecho, dar nomes
+  ou vincular pessoas cadastradas. “Sou eu” identifica suas falas para os itens de ação.
+  Requer download único de ~102 MB e o modelo Parakeet para o texto.
 
 ### 🤖 IA local (Ollama)
 - Resumos de notas e projetos com **templates** personalizáveis
@@ -88,6 +92,7 @@ Por padrão tudo é local. Os únicos acessos de rede são **opcionais e explíc
 | Recurso | Quando acessa a rede |
 |---|---|
 | Transcrição | Download único do modelo Parakeet (HuggingFace) |
+| Diarização | Download único do modelo Nemotron 3 Core ML (HuggingFace) |
 | IA / resumos | Servidor Ollama local (`localhost`) que você controla |
 | Backup S3 | Apenas se você configurar credenciais |
 | Atualizações | Verificação no GitHub Releases |

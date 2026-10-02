@@ -1,0 +1,4 @@
+Derived from speech-swift (https://github.com/soniqo/speech-swift)
+Revision: ca382eec35c3675be9670081612e19ad9496f4c7
+License: Apache-2.0
+Changes: Core ML offline subset, imports removed, local tensor and post-processing helpers, progress callback; no MLX, downloader, clustering or streaming APIs.

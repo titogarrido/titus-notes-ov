@@ -99,6 +99,8 @@ export interface Note {
   peopleIds: string[];
   summaries?: Summary[];
   transcript?: string;
+  /** Identidades locais a esta gravação e texto alinhado por palavra. */
+  diarization?: Diarization | null;
   /** Transcrição apenas do seu microfone (o que VOCÊ falou) — base para "meus" itens de ação */
   selfTranscript?: string;
   /** Nome do arquivo de áudio em files/audio/ — vazio/ausente quando não há gravação */
@@ -107,6 +109,34 @@ export interface Note {
   micFile?: string;
   /** Tags livres para organização transversal. */
   tags?: string[];
+}
+
+export interface DiarizationSpeaker {
+  id: number;
+  name: string;
+  personId?: string | null;
+  isSelf: boolean;
+}
+
+export interface DiarizationTurn {
+  start: number;
+  end: number;
+  speakerId: number;
+}
+
+export interface DiarizationSegment {
+  start: number;
+  end: number;
+  speakerIds: number[];
+  text: string;
+}
+
+export interface Diarization {
+  filename: string;
+  model: string;
+  speakers: DiarizationSpeaker[];
+  turns: DiarizationTurn[];
+  segments: DiarizationSegment[];
 }
 
 export type AiProvider = "ollama" | "openai" | "codex";
@@ -245,8 +275,7 @@ export interface TranscriptionModelStatus {
 export interface ActiveTranscription {
   noteId: string;
   filename: string;
-  /** "decoding" enquanto o áudio vira PCM; "transcribing" durante a inferência */
-  phase: "decoding" | "transcribing";
+  phase: "decoding" | "diarizing" | "transcribing";
   processedSecs: number;
   totalSecs: number;
 }

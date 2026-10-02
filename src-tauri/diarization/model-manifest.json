@@ -1,0 +1,62 @@
+{
+  "repository": "aufklarer/Nemotron-3-Diarization-100M-CoreML-INT8",
+  "revision": "db823d36c2230d5535a6165c932f8a5369484b7a",
+  "files": [
+    {
+      "path": "LICENSE",
+      "size": 2619
+    },
+    {
+      "path": "NOTICE",
+      "size": 255
+    },
+    {
+      "path": "Nemotron3Head.mlmodelc/analytics/coremldata.bin",
+      "size": 243
+    },
+    {
+      "path": "Nemotron3Head.mlmodelc/coremldata.bin",
+      "size": 418
+    },
+    {
+      "path": "Nemotron3Head.mlmodelc/metadata.json",
+      "size": 2786
+    },
+    {
+      "path": "Nemotron3Head.mlmodelc/model.mil",
+      "size": 422835
+    },
+    {
+      "path": "Nemotron3Head.mlmodelc/weights/weight.bin",
+      "size": 106087744
+    },
+    {
+      "path": "Nemotron3PreEncoder.mlmodelc/analytics/coremldata.bin",
+      "size": 243
+    },
+    {
+      "path": "Nemotron3PreEncoder.mlmodelc/coremldata.bin",
+      "size": 325
+    },
+    {
+      "path": "Nemotron3PreEncoder.mlmodelc/metadata.json",
+      "size": 1665
+    },
+    {
+      "path": "Nemotron3PreEncoder.mlmodelc/model.mil",
+      "size": 1544
+    },
+    {
+      "path": "Nemotron3PreEncoder.mlmodelc/weights/weight.bin",
+      "size": 558336
+    },
+    {
+      "path": "config.json",
+      "size": 2174
+    },
+    {
+      "path": "learnable_silence.f32",
+      "size": 2048
+    }
+  ]
+}

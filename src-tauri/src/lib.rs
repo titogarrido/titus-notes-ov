@@ -1,4 +1,5 @@
 mod codex_auth;
+mod diarizer;
 mod mic_monitor;
 mod recorder;
 pub mod transcriber;
@@ -117,6 +118,9 @@ pub struct Note {
     pub summaries: Vec<Summary>,
     #[serde(default)]
     pub transcript: String,
+    /// Speaker identities and word-aligned turns for the attached recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diarization: Option<diarizer::Diarization>,
     /// Transcrição só do microfone (o que VOCÊ falou) — base para "meus" itens de ação.
     #[serde(default)]
     pub self_transcript: String,
@@ -1372,6 +1376,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(recorder::RecorderState(std::sync::Mutex::new(None)))
         .manage(transcriber::TranscriberState::default())
+        .manage(diarizer::DiarizerState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1437,6 +1442,10 @@ pub fn run() {
             transcriber::transcribe_audio,
             transcriber::cancel_transcription,
             transcriber::transcription_status,
+            diarizer::diarization_model_status,
+            diarizer::download_diarization_model,
+            diarizer::cancel_diarization_model_download,
+            diarizer::diarize_audio,
             codex_auth::codex_login_start,
             codex_auth::codex_login_complete,
             codex_auth::codex_auth_status,

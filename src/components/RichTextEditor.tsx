@@ -4,7 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import "./RichTextEditor.css";
 import { FileText, Sparkles, Mic, MicOff, PanelRightOpen, PanelRightClose, Volume2, Square, Trash2, Captions, Download, Loader2, X, Check, ListChecks, Upload } from "lucide-react";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
-import { Summary, SummaryTemplate, OllamaSettings } from "../types";
+import { Summary, SummaryTemplate, OllamaSettings, Diarization } from "../types";
+import { DiarizationControl } from "./DiarizationControl";
 import { SummariesPanel } from "./SummariesPanel";
 import { ActionItemsPanel } from "./ActionItemsPanel";
 import { NoteSidePanel } from "./lexical/NoteSidePanel";
@@ -75,6 +76,10 @@ interface RichTextEditorProps {
   // Transcrição (opcional — quando ausente, oculta a aba)
   transcript?: string;
   onTranscriptChange?: (t: string) => void;
+  diarization?: Diarization | null;
+  notePeopleIds?: string[];
+  onDiarizationChange?: (data: Diarization, text: string, selfText?: string) => Promise<void> | void;
+  onBeforeAudioProcess?: () => Promise<void>;
   /** Arquivo de áudio em files/audio/ — quando presente, mostra um mini player na aba Transcrição */
   audioFile?: string;
   /** Anexa um áudio gravado externamente (ex.: Gravador do iPhone) à nota. */
@@ -106,7 +111,7 @@ async function resolveAudioUrl(filename: string): Promise<string> {
   return url;
 }
 
-const TranscriptAudioPlayer: React.FC<{ filename: string }> = ({ filename }) => {
+const TranscriptAudioPlayer: React.FC<{ filename: string; audioRef: React.RefObject<HTMLAudioElement | null> }> = ({ filename, audioRef }) => {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -146,6 +151,7 @@ const TranscriptAudioPlayer: React.FC<{ filename: string }> = ({ filename }) => 
         </span>
       ) : src ? (
         <audio
+          ref={audioRef}
           controls
           src={src}
           preload="metadata"
@@ -191,7 +197,8 @@ const TranscribeControl: React.FC<{
   audioFile: string;
   hasTranscript: boolean;
   onTranscript: (text: string) => void;
-}> = ({ noteId, audioFile, hasTranscript, onTranscript }) => {
+  onBeforeProcess?: () => Promise<void>;
+}> = ({ noteId, audioFile, hasTranscript, onTranscript, onBeforeProcess }) => {
   const [model, setModel] = useState<TranscriptionModelStatus | null>(null);
   const [job, setJob] = useState<ActiveTranscription | null>(null);
   const [download, setDownload] = useState<ModelDownloadProgress | null>(null);
@@ -229,13 +236,16 @@ const TranscribeControl: React.FC<{
       }),
     );
     track(
-      listen<{ noteId: string; text: string }>("transcription-finished", (e) => {
+      listen<{ noteId: string; filename: string; text: string }>("transcription-finished", (e) => {
         setJob(null);
         setBusy(false);
-        if (e.payload.noteId === noteId) {
+        if (e.payload.noteId === noteId && e.payload.filename === audioFile) {
           onTranscript(e.payload.text);
         }
       }),
+    );
+    track(
+      listen("diarization-finished", () => { setJob(null); setBusy(false); }),
     );
     track(
       listen<{ noteId: string; message: string }>("transcription-error", (e) => {
@@ -267,7 +277,7 @@ const TranscribeControl: React.FC<{
       unlisteners.forEach((u) => u());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [noteId]);
+  }, [noteId, audioFile]);
 
   const startTranscription = async () => {
     setConfirmReplace(false);
@@ -283,6 +293,7 @@ const TranscribeControl: React.FC<{
       totalSecs: 0,
     });
     try {
+      await onBeforeProcess?.();
       await invoke("transcribe_audio", { noteId, filename: audioFile });
     } catch (e: any) {
       setError(String(e?.message || e));
@@ -332,7 +343,7 @@ const TranscribeControl: React.FC<{
             <span style={{ fontSize: "12px", fontWeight: 600 }}>
               {job.phase === "decoding"
                 ? `Preparando áudio…${job.processedSecs > 0 ? ` ${formatElapsed(Math.floor(job.processedSecs))}` : ""}`
-                : `Transcrevendo… ${formatElapsed(Math.floor(job.processedSecs))} / ${formatElapsed(Math.floor(job.totalSecs))}`}
+                : `${job.phase === "diarizing" ? "Separando vozes" : "Transcrevendo"}… ${formatElapsed(Math.floor(job.processedSecs))} / ${formatElapsed(Math.floor(job.totalSecs))}`}
             </span>
             <div
               style={{
@@ -372,7 +383,7 @@ const TranscribeControl: React.FC<{
               type="button"
               className="recorder-btn"
               onClick={() => invoke("cancel_transcription").catch(() => {})}
-              title="Cancelar transcrição"
+              title="Cancelar processamento"
             >
               <X size={12} /> Cancelar
             </button>
@@ -1254,6 +1265,10 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   onDeleteSummary,
   transcript,
   onTranscriptChange,
+  diarization,
+  notePeopleIds = [],
+  onDiarizationChange,
+  onBeforeAudioProcess,
   audioFile,
   onAudioImported,
   noteId = "",
@@ -1264,6 +1279,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   const { db, setCurrentView, setSelectedEntityId, liveTranscribingNoteId } = useApp();
   const isReadyRef = useRef(false);
   const transcriptRef = useRef<HTMLTextAreaElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [processingAudio, setProcessingAudio] = useState(false);
   // Esta nota está sendo transcrita ao vivo agora?
   const liveActive = !!noteId && liveTranscribingNoteId === noteId;
   const summariesEnabled =
@@ -1665,6 +1682,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             padding: "16px 24px",
             background: "white",
             minHeight: 0,
+            overflowY: "auto",
           }}
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
@@ -1701,18 +1719,36 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
           {noteId && onAudioImported && (
             <ImportAudioControl hasAudio={!!audioFile} onImported={onAudioImported} />
           )}
-          {audioFile && <TranscriptAudioPlayer filename={audioFile} />}
+          {audioFile && <TranscriptAudioPlayer filename={audioFile} audioRef={audioRef} />}
           {noteId && audioFile && (
             <TranscribeControl
               noteId={noteId}
               audioFile={audioFile}
               hasTranscript={localTranscript.trim().length > 0}
               onTranscript={(t) => setLocalTranscript(t)}
+              onBeforeProcess={onBeforeAudioProcess}
+            />
+          )}
+          {noteId && audioFile && onDiarizationChange && (
+            <DiarizationControl
+              key={audioFile}
+              noteId={noteId}
+              audioFile={audioFile}
+              data={diarization}
+              transcript={localTranscript}
+              people={db.people}
+              participantIds={notePeopleIds}
+              audioRef={audioRef}
+              onTranscript={setLocalTranscript}
+              onChange={onDiarizationChange}
+              onProcessingChange={setProcessingAudio}
+              onBeforeProcess={onBeforeAudioProcess}
             />
           )}
           <textarea
             ref={transcriptRef}
             value={localTranscript}
+            disabled={processingAudio}
             onChange={(e) => {
               setLocalTranscript(e.target.value);
               onTranscriptChange?.(e.target.value);
@@ -1722,7 +1758,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             style={{
               flex: 1,
               width: "100%",
-              minHeight: 0,
+              minHeight: "240px",
               padding: "14px 16px",
               border: "1px solid var(--color-border, #e0e0e0)",
               borderRadius: "8px",

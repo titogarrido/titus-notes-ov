@@ -372,11 +372,59 @@ Testa:
 5. **Qualidade**: Melhor com áudio limpo (16kHz, mono)
 6. **Offline**: Funciona completamente sem internet (após download)
 
+## Diarização de gravações finalizadas
+
+Na aba **Transcrição**, o botão **Diarizar** processa o áudio anexado localmente.
+A primeira utilização oferece o download do **Nemotron 3 Core ML INT8** (~102 MB);
+o modelo Parakeet também precisa estar instalado. Se já existir transcrição, a UI
+solicita a substituição antes de começar. Erros e cancelamento preservam o texto anterior.
+
+O fluxo usa `src-tauri/src/diarizer.rs`:
+
+1. Symphonia decodifica o áudio em PCM mono de 16 kHz.
+2. Um helper Swift/Core ML identifica os intervalos de até oito interlocutores.
+3. O helper termina e libera o modelo antes de carregar o Parakeet.
+4. Parakeet transcreve em janelas delimitadas pelo início dos turnos, com contexto
+   nas bordas, normalização de volume por janela e timestamps por palavra. Janelas
+   longas são cortadas em pausas (~60 s). O áudio inteiro continua coberto, e as
+   palavras do contexto pertencem a uma única janela. Os intervalos de voz são
+   alinhados a essas palavras. Sobreposições recebem os dois rótulos;
+   palavras sem atribuição permanecem como **Não identificado**.
+5. `diarization-finished` persiste `note.diarization` e o texto no AppContext,
+   inclusive ao navegar para outra nota. Resultados de um áudio substituído são descartados.
+
+O painel permite ouvir até oito segundos de uma voz, editar seu nome ou escolher
+uma pessoa cadastrada. A seleção de pessoa também a adiciona aos participantes.
+Alterações atualizam apenas os cabeçalhos conhecidos, preservando o texto editado
+manualmente. **Sou eu** gera a transcrição própria para os itens de ação, excluindo
+falas sobrepostas. As identidades são locais a cada gravação; não há reconhecimento
+automático de nomes entre reuniões. A diarização melhora a atribuição de falas,
+sem prometer corrigir palavras reconhecidas incorretamente ou separar áudio sobreposto.
+
+O helper é compilado por `src-tauri/build.rs` e embutido no binário do app; usuários
+do app instalado não precisam de Xcode, Python, MLX ou programas externos. O código
+Core ML foi adaptado do [speech-swift](https://github.com/soniqo/speech-swift), com
+revisão e licença preservadas em `src-tauri/diarization/vendor/NOTICE` e `LICENSE`.
+Os pesos vêm do [bundle Core ML](https://huggingface.co/aufklarer/Nemotron-3-Diarization-100M-CoreML-INT8);
+`model-manifest.json` fixa a revisão e os tamanhos. Downloads são temporários e
+só substituem arquivos completos; o PCM temporário é removido ao terminar ou cancelar.
+
+Comandos novos: `diarization_model_status`, `download_diarization_model`,
+`cancel_diarization_model_download`, `diarize_audio`. O job compartilha o bloqueio
+de transcrição e usa `transcription-progress` (fase `diarizing`) e
+`cancel_transcription`. Download usa eventos `diarization-model-*`.
+
+Verificação: `npm test`, `npm run build`, `cargo test --offline diarizer::tests --lib`.
+O teste de inferência `coreml_and_parakeet_align_real_audio` é ignorado por padrão:
+para executá-lo, defina `TITUS_DIARIZATION_TEST_MODEL` (pasta dos pesos Core ML),
+`TITUS_PARAKEET_TEST_MODEL` (pasta Parakeet) e `TITUS_DIARIZATION_TEST_PCM` (fixture
+com duas vozes, Float32 little-endian, mono, 16 kHz), e passe `-- --include-ignored`.
+
 ## Melhorias Futuras
 
 - [ ] Suporte a múltiplos modelos/idiomas
 - [ ] Detecção automática de idioma
-- [ ] Identificação de speakers (diarização)
+- [x] Identificação de speakers (diarização)
 - [ ] Cache do modelo em memória entre transcrições
 - [ ] Processamento em GPU (CUDA/Metal)
 - [ ] Transcrição em tempo real durante gravação

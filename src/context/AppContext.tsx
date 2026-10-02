@@ -14,7 +14,9 @@ import {
   DataRootInfo,
   ImportedHyprnoteSession,
   AudioCleanupResult,
+  Diarization,
 } from "../types";
+import { renderDiarizedTranscript } from "../lib/diarization";
 import { buildImportReport, ImportReport } from "../lib/hyprnoteImport";
 import { loadAutoStopSecs } from "../lib/recorderPrefs";
 
@@ -400,6 +402,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     ...n,
                     audioFile: filename,
                     micFile: micFilename || "",
+                    diarization: null,
+                    selfTranscript: "",
                     updatedAt: new Date().toISOString(),
                   }
                 : n,
@@ -433,14 +437,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     listen<{ noteId: string; filename: string; text: string; selfText?: string | null }>(
       "transcription-finished",
       async (e) => {
-        const { noteId, text, selfText } = e.payload;
+        const { noteId, filename, text, selfText } = e.payload;
         await saveDatabase((prev) => ({
           ...prev,
           notes: prev.notes.map((n) =>
-            n.id === noteId
+            n.id === noteId && n.audioFile === filename
               ? {
                   ...n,
                   transcript: text,
+                  diarization: null,
                   updatedAt: new Date().toISOString(),
                   // selfText presente = transcrição por canais; os sidecars já
                   // foram consumidos e apagados no backend, então zera micFile.
@@ -460,6 +465,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       disposed = true;
       unlisteners.forEach((u) => u());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Diarization survives navigation. Discard results for an audio that was
+  // replaced/deleted while the worker was running; never recreate a deleted note.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen<{ noteId: string; filename: string; diarization: Diarization }>("diarization-finished", async ({ payload }) => {
+      await saveDatabase((prev) => ({
+        ...prev,
+        notes: prev.notes.map((note) => note.id === payload.noteId && note.audioFile === payload.filename
+          ? { ...note, diarization: payload.diarization, transcript: renderDiarizedTranscript(payload.diarization), updatedAt: new Date().toISOString() }
+          : note),
+      }));
+    }).then((u) => { if (disposed) u(); else unlisten = u; });
+    return () => { disposed = true; unlisten?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

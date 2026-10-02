@@ -27,6 +27,7 @@ import { TagChips } from "../components/TagChips";
 import { ParticipantsField } from "../components/ParticipantsField";
 import { Combobox } from "../components/Combobox";
 import { allTags, normalizeTag } from "../lib/tags";
+import { renderSelfTranscript } from "../lib/diarization";
 
 // ---------- helpers ----------
 
@@ -1118,8 +1119,26 @@ export const NotesView: React.FC = () => {
                   }));
                 }}
                 transcript={selectedNote.transcript || ""}
+                diarization={selectedNote.diarization}
+                notePeopleIds={selectedNote.peopleIds}
+                onBeforeAudioProcess={() => flushRef.current()}
+                onDiarizationChange={async (diarization, transcript, selfText) => {
+                  // Flush pending textarea edits before applying the renamed headers.
+                  await flushRef.current();
+                  await patchNote(selectedNote.id, (old) => ({
+                    diarization,
+                    transcript,
+                    ...(selfText !== undefined ? { selfTranscript: selfText } : {}),
+                    peopleIds: [...new Set([...old.peopleIds, ...diarization.speakers.flatMap((speaker) => speaker.personId ? [speaker.personId] : [])])],
+                  }));
+                }}
                 onTranscriptChange={(t) => {
-                  queueNoteFields(selectedNote.id, { transcript: t });
+                  queueNoteFields(selectedNote.id, {
+                    transcript: t,
+                    ...(selectedNote.diarization?.speakers.some((speaker) => speaker.isSelf)
+                      ? { selfTranscript: renderSelfTranscript(selectedNote.diarization, t) }
+                      : {}),
+                  });
                 }}
                 audioFile={selectedNote.audioFile || ""}
                 onAudioImported={async (filename) => {
@@ -1132,6 +1151,7 @@ export const NotesView: React.FC = () => {
                     audioFile: filename,
                     micFile: "",
                     selfTranscript: "",
+                    diarization: null,
                   });
                   // Remove o áudio antigo se nenhuma outra nota o usa.
                   const stale = [old, oldMic].filter(
