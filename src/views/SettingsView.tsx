@@ -51,8 +51,11 @@ import {
   codexLoginStart,
   codexLoginComplete,
   codexAuthStatus,
+  codexListModels,
   codexLogout,
+  CodexModel,
   CodexStatus,
+  DEFAULT_CODEX_MODEL,
 } from "../lib/codex";
 import { ImportReport } from "../lib/hyprnoteImport";
 
@@ -61,6 +64,16 @@ const DEFAULT_SETTINGS: OllamaSettings = {
   url: "http://localhost:11434",
   model: "llama3.2",
   language: "pt-BR",
+};
+
+const CODEX_REASONING_LABELS: Record<string, string> = {
+  none: "Sem raciocínio",
+  minimal: "Mínimo",
+  low: "Baixo",
+  medium: "Médio",
+  high: "Alto",
+  xhigh: "Muito alto",
+  max: "Máximo",
 };
 
 export const SettingsView: React.FC = () => {
@@ -129,12 +142,15 @@ export const SettingsView: React.FC = () => {
   const [openaiModel, setOpenaiModel] = useState(settings.openaiModel || "");
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState(settings.openaiBaseUrl || "");
   const [codexModel, setCodexModel] = useState(settings.codexModel || "");
+  const [codexReasoningEffort, setCodexReasoningEffort] = useState(settings.codexReasoningEffort || "");
   const [language, setLanguage] = useState(settings.language || "pt-BR");
   // Prompts: o textarea mostra o prompt efetivo (override salvo ou o padrão).
   const [promptSummary, setPromptSummary] = useState(settings.prompts?.summary || DEFAULT_PROMPTS.summary);
   const [promptActionItems, setPromptActionItems] = useState(settings.prompts?.actionItems || DEFAULT_PROMPTS.actionItems);
   const [promptProfile, setPromptProfile] = useState(settings.prompts?.profile || DEFAULT_PROMPTS.profile);
   const [savedHint, setSavedHint] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     setProvider(settings.provider ?? "ollama");
@@ -144,6 +160,7 @@ export const SettingsView: React.FC = () => {
     setOpenaiModel(settings.openaiModel || "");
     setOpenaiBaseUrl(settings.openaiBaseUrl || "");
     setCodexModel(settings.codexModel || "");
+    setCodexReasoningEffort(settings.codexReasoningEffort || "");
     setLanguage(settings.language || "pt-BR");
     setPromptSummary(settings.prompts?.summary || DEFAULT_PROMPTS.summary);
     setPromptActionItems(settings.prompts?.actionItems || DEFAULT_PROMPTS.actionItems);
@@ -158,8 +175,74 @@ export const SettingsView: React.FC = () => {
     | { kind: "error"; message: string }
   >({ kind: "idle" });
 
-  // Settings atuais do formulário (montado a partir do estado local) — usado ao
-  // salvar e ao testar a conexão do provedor selecionado.
+  // Ao trocar de provedor, descarta o resultado do teste anterior (era de outro provedor).
+  useEffect(() => {
+    setConnStatus({ kind: "idle" });
+  }, [provider]);
+
+  // ---- Login Codex (OAuth "Entrar com ChatGPT") ----
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const [codexLogin, setCodexLogin] = useState<{ verificationUrl: string; userCode: string } | null>(null);
+  const [codexBusy, setCodexBusy] = useState(false);
+  const [codexError, setCodexError] = useState<string | null>(null);
+  const [codexCatalog, setCodexCatalog] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ready"; models: CodexModel[] }
+    | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const [codexCatalogAttempt, setCodexCatalogAttempt] = useState(0);
+
+  const refreshCodexStatus = () =>
+    codexAuthStatus()
+      .then(setCodexStatus)
+      .catch(() => setCodexStatus({ loggedIn: false }));
+
+  useEffect(() => {
+    if (provider === "codex") refreshCodexStatus();
+  }, [provider]);
+
+  const codexLoggedIn = codexStatus?.loggedIn ?? false;
+  const codexAccountId = codexStatus?.accountId;
+  useEffect(() => {
+    if (provider !== "codex" || !codexLoggedIn) {
+      setCodexCatalog({ kind: "idle" });
+      return;
+    }
+    let cancelled = false;
+    setCodexCatalog({ kind: "loading" });
+    codexListModels()
+      .then((models) => {
+        if (cancelled) return;
+        setCodexCatalog(models.length
+          ? { kind: "ready", models }
+          : { kind: "error", message: "Nenhum modelo do Codex disponível nesta conta." });
+      })
+      .catch((error) => {
+        if (!cancelled) setCodexCatalog({ kind: "error", message: error?.message || String(error) });
+      });
+    return () => { cancelled = true; };
+  }, [provider, codexLoggedIn, codexAccountId, codexCatalogAttempt]);
+
+  const codexModels = codexCatalog.kind === "ready" ? codexCatalog.models : [];
+  const explicitCodexModel = codexModel.trim();
+  const catalogModel = codexModels.find((item) => item.slug === (explicitCodexModel || DEFAULT_CODEX_MODEL))
+    ?? (explicitCodexModel ? undefined : codexModels[0]);
+  const selectedCodexModel = explicitCodexModel || catalogModel?.slug || "";
+  const codexReasoningLevels = catalogModel?.supportedReasoningLevels ?? [];
+  const selectedCodexEffort = !catalogModel || codexReasoningLevels.some((level) => level.effort === codexReasoningEffort)
+    ? codexReasoningEffort
+    : "";
+
+  const handleCodexModelChange = (slug: string) => {
+    setCodexModel(slug);
+    const nextModel = codexModels.find((item) => item.slug === slug);
+    if (!nextModel?.supportedReasoningLevels.some((level) => level.effort === codexReasoningEffort)) {
+      setCodexReasoningEffort("");
+    }
+  };
+
+  // Settings atuais do formulário, usados para salvar e testar a conexão.
   const draftSettings = (): OllamaSettings => ({
     ...settings,
     provider,
@@ -168,7 +251,8 @@ export const SettingsView: React.FC = () => {
     openaiApiKey: openaiApiKey.trim(),
     openaiModel: openaiModel.trim(),
     openaiBaseUrl: openaiBaseUrl.trim(),
-    codexModel: codexModel.trim(),
+    codexModel: provider === "codex" ? selectedCodexModel : explicitCodexModel,
+    codexReasoningEffort: (provider === "codex" ? selectedCodexEffort : codexReasoningEffort) || undefined,
     language,
     prompts: {
       // Só persiste quando difere do padrão; igual ao padrão = usa o embutido.
@@ -180,30 +264,19 @@ export const SettingsView: React.FC = () => {
   });
 
   const handleSaveSettings = async () => {
-    await updateSettings(draftSettings());
-    setSavedHint(true);
-    setTimeout(() => setSavedHint(false), 1500);
+    setSettingsSaving(true);
+    setSettingsSaveError(null);
+    setSavedHint(false);
+    try {
+      await updateSettings(draftSettings());
+      setSavedHint(true);
+      setTimeout(() => setSavedHint(false), 1500);
+    } catch (error: unknown) {
+      setSettingsSaveError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSettingsSaving(false);
+    }
   };
-
-  // Ao trocar de provedor, descarta o resultado do teste anterior (era de outro provedor).
-  useEffect(() => {
-    setConnStatus({ kind: "idle" });
-  }, [provider]);
-
-  // ---- Login Codex (OAuth "Entrar com ChatGPT") ----
-  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
-  const [codexLogin, setCodexLogin] = useState<{ verificationUrl: string; userCode: string } | null>(null);
-  const [codexBusy, setCodexBusy] = useState(false);
-  const [codexError, setCodexError] = useState<string | null>(null);
-
-  const refreshCodexStatus = () =>
-    codexAuthStatus()
-      .then(setCodexStatus)
-      .catch(() => setCodexStatus({ loggedIn: false }));
-
-  useEffect(() => {
-    if (provider === "codex") refreshCodexStatus();
-  }, [provider]);
 
   const handleCodexLogin = async () => {
     setCodexError(null);
@@ -1147,6 +1220,7 @@ export const SettingsView: React.FC = () => {
                 <button
                   key={opt.id}
                   type="button"
+                  aria-pressed={active}
                   onClick={() => setProvider(opt.id)}
                   style={{
                     padding: "7px 14px",
@@ -1299,16 +1373,62 @@ export const SettingsView: React.FC = () => {
                 </div>
               )}
 
-              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)", maxWidth: 360 }}>
-                Modelo (opcional)
-                <input
-                  type="text"
-                  className="form-input"
-                  value={codexModel}
-                  onChange={(e) => setCodexModel(e.target.value)}
-                  placeholder="gpt-5"
-                />
-              </label>
+              {codexCatalog.kind === "error" && (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: 12 }}>
+                  <span role="alert" style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", color: "#cf222e" }}>
+                    <AlertCircle size={14} /> {codexCatalog.message}
+                  </span>
+                  <button className="btn-secondary" onClick={() => setCodexCatalogAttempt((attempt) => attempt + 1)}>
+                    Recarregar modelos
+                  </button>
+                </div>
+              )}
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "12px" }}>
+                <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+                  Modelo
+                  {codexCatalog.kind === "ready" ? (
+                    <select className="form-select" value={selectedCodexModel} onChange={(e) => handleCodexModelChange(e.target.value)}>
+                      {!catalogModel && <option value={selectedCodexModel}>{selectedCodexModel} (fora da lista)</option>}
+                      {codexModels.map((item) => (
+                        <option key={item.slug} value={item.slug}>{item.displayName}</option>
+                      ))}
+                    </select>
+                  ) : codexCatalog.kind === "loading" ? (
+                    <select className="form-select" disabled>
+                      <option>Carregando modelos…</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={codexModel}
+                      onChange={(e) => handleCodexModelChange(e.target.value)}
+                      placeholder={DEFAULT_CODEX_MODEL}
+                      spellCheck={false}
+                    />
+                  )}
+                </label>
+                <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "12px", color: "var(--color-text-muted)" }}>
+                  Nível de raciocínio
+                  <select
+                    className="form-select"
+                    value={selectedCodexEffort}
+                    onChange={(e) => setCodexReasoningEffort(e.target.value)}
+                    disabled={!codexReasoningLevels.length && !selectedCodexEffort}
+                  >
+                    <option value="">Padrão do modelo</option>
+                    {!catalogModel && selectedCodexEffort && (
+                      <option value={selectedCodexEffort}>
+                        {CODEX_REASONING_LABELS[selectedCodexEffort] ?? selectedCodexEffort}
+                      </option>
+                    )}
+                    {codexReasoningLevels.map(({ effort }) => (
+                      <option key={effort} value={effort}>{CODEX_REASONING_LABELS[effort] ?? effort}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             </>
           )}
 
@@ -1338,8 +1458,8 @@ export const SettingsView: React.FC = () => {
           </label>
 
           <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "14px", flexWrap: "wrap" }}>
-            <button className="btn-primary" onClick={handleSaveSettings}>
-              Salvar
+            <button className="btn-primary" onClick={handleSaveSettings} disabled={settingsSaving}>
+              {settingsSaving ? "Salvando…" : "Salvar"}
             </button>
             {provider !== "codex" && (
               <button className="btn-secondary" onClick={handleTestConnection}>
@@ -1349,6 +1469,11 @@ export const SettingsView: React.FC = () => {
             {savedHint && (
               <span style={{ fontSize: "12px", color: "#1f8e3d", display: "flex", alignItems: "center", gap: "4px" }}>
                 <CheckCircle2 size={14} /> Salvo
+              </span>
+            )}
+            {settingsSaveError && (
+              <span role="alert" style={{ fontSize: "12px", color: "#cf222e", display: "flex", alignItems: "center", gap: "4px" }}>
+                <AlertCircle size={14} /> Falha ao salvar. {settingsSaveError}
               </span>
             )}
             {connStatus.kind === "ok" && provider !== "codex" && (
@@ -1459,12 +1584,17 @@ export const SettingsView: React.FC = () => {
           })}
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-            <button className="btn-primary" onClick={handleSaveSettings}>
-              Salvar prompts
+            <button className="btn-primary" onClick={handleSaveSettings} disabled={settingsSaving}>
+              {settingsSaving ? "Salvando…" : "Salvar prompts"}
             </button>
             {savedHint && (
               <span style={{ fontSize: "12px", color: "#1f8e3d", display: "flex", alignItems: "center", gap: "4px" }}>
                 <CheckCircle2 size={14} /> Salvo
+              </span>
+            )}
+            {settingsSaveError && (
+              <span role="alert" style={{ fontSize: "12px", color: "#cf222e", display: "flex", alignItems: "center", gap: "4px" }}>
+                <AlertCircle size={14} /> Falha ao salvar. {settingsSaveError}
               </span>
             )}
           </div>

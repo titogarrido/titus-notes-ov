@@ -20,8 +20,11 @@ use tauri::{AppHandle, Manager};
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_BASE: &str = "https://auth.openai.com";
 const CODEX_BASE: &str = "https://chatgpt.com/backend-api/codex";
+// O catálogo do Codex usa a versão do protocolo do cliente para filtrar modelos.
+const CODEX_CLIENT_VERSION: &str = "0.171.0";
 const USER_AGENT: &str = "titus-notes-codex";
 const DEFAULT_MODEL: &str = "gpt-5";
+static AUTH_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---------------------------------------------------------------------------
 // Armazenamento dos tokens (fora do banco/backup — fica no diretório de config).
@@ -61,9 +64,7 @@ fn load_auth(app: &AppHandle) -> Result<Option<StoredAuth>, String> {
 }
 
 fn save_auth(app: &AppHandle, auth: &StoredAuth) -> Result<(), String> {
-    let path = auth_path(app)?;
-    let raw = serde_json::to_string_pretty(auth).map_err(|e| e.to_string())?;
-    std::fs::write(&path, raw).map_err(|e| e.to_string())
+    crate::write_json_atomically(&auth_path(app)?, auth)
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +245,7 @@ pub async fn codex_login_complete(
         id_token: tokens.id_token,
         account_id: account_id.clone(),
     };
+    let _guard = AUTH_WRITE_LOCK.lock().await;
     save_auth(&app, &auth)?;
     Ok(CodexStatus {
         logged_in: true,
@@ -266,7 +268,8 @@ pub fn codex_auth_status(app: AppHandle) -> Result<CodexStatus, String> {
 }
 
 #[tauri::command]
-pub fn codex_logout(app: AppHandle) -> Result<(), String> {
+pub async fn codex_logout(app: AppHandle) -> Result<(), String> {
+    let _guard = AUTH_WRITE_LOCK.lock().await;
     let path = auth_path(&app)?;
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -275,15 +278,13 @@ pub fn codex_logout(app: AppHandle) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Geração de texto via {CODEX_BASE}/responses
+// Requisições autenticadas ao catálogo e à Responses API
 // ---------------------------------------------------------------------------
 
-enum RespErr {
-    Unauthorized,
-    Other(String),
-}
-
-async fn refresh_tokens(client: &reqwest::Client, refresh_token: &str) -> Result<TokenResp, String> {
+async fn refresh_tokens(
+    client: &reqwest::Client,
+    refresh_token: &str,
+) -> Result<TokenResp, String> {
     let resp = client
         .post(format!("{AUTH_BASE}/oauth/token"))
         .form(&[
@@ -305,6 +306,129 @@ async fn refresh_tokens(client: &reqwest::Client, refresh_token: &str) -> Result
         ));
     }
     resp.json::<TokenResp>().await.map_err(|e| e.to_string())
+}
+
+fn require_auth(app: &AppHandle) -> Result<StoredAuth, String> {
+    load_auth(app)?.ok_or_else(|| {
+        "Você não está conectado ao ChatGPT. Faça login em Configuração de AIs.".to_string()
+    })
+}
+
+fn codex_request(request: reqwest::RequestBuilder, auth: &StoredAuth) -> reqwest::RequestBuilder {
+    let request = request
+        .bearer_auth(&auth.access_token)
+        .header("originator", "codex_cli_rs");
+    match &auth.account_id {
+        Some(account) => request.header("ChatGPT-Account-ID", account),
+        None => request,
+    }
+}
+
+async fn send_codex_request(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    build: impl Fn(&StoredAuth) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, String> {
+    let auth = require_auth(app)?;
+    let response = build(&auth)
+        .send()
+        .await
+        .map_err(|e| format!("Falha ao chamar o Codex: {e}"))?;
+    if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+        return Ok(response);
+    }
+
+    let updated = {
+        let _guard = AUTH_WRITE_LOCK.lock().await;
+        let mut current = require_auth(app)?;
+        if current.account_id != auth.account_id {
+            return Err("A conta do ChatGPT mudou. Tente novamente.".to_string());
+        }
+        // Outra requisição pode já ter renovado o token enquanto esta aguardava.
+        if current.access_token == auth.access_token && current.refresh_token == auth.refresh_token
+        {
+            if current.refresh_token.is_empty() {
+                return Err("Sessão do ChatGPT expirou. Saia e entre de novo.".to_string());
+            }
+            let refreshed = refresh_tokens(client, &current.refresh_token).await?;
+            current.access_token = refreshed.access_token;
+            if !refreshed.refresh_token.is_empty() {
+                current.refresh_token = refreshed.refresh_token;
+            }
+            if !refreshed.id_token.is_empty() {
+                current.account_id =
+                    account_id_from_id_token(&refreshed.id_token).or(current.account_id);
+                current.id_token = refreshed.id_token;
+            }
+            save_auth(app, &current)?;
+        }
+        current
+    };
+
+    let response = build(&updated)
+        .send()
+        .await
+        .map_err(|e| format!("Falha ao chamar o Codex: {e}"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err("Sessão do ChatGPT inválida. Saia e entre de novo.".to_string());
+    }
+    Ok(response)
+}
+
+#[derive(Serialize, Deserialize)]
+struct CodexReasoningLevel {
+    effort: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct CodexModel {
+    slug: String,
+    display_name: String,
+    #[serde(default)]
+    supported_reasoning_levels: Vec<CodexReasoningLevel>,
+    #[serde(skip_serializing)]
+    visibility: String,
+    #[serde(default, skip_serializing)]
+    priority: u32,
+}
+
+#[derive(Deserialize)]
+struct CodexModelCatalog {
+    models: Vec<CodexModel>,
+}
+
+impl CodexModelCatalog {
+    fn selectable_models(mut self) -> Vec<CodexModel> {
+        self.models.retain(|model| model.visibility == "list");
+        self.models.sort_by_key(|model| model.priority);
+        for model in &mut self.models {
+            // Ultra e persistent dependem da orquestração de sessões do cliente Codex.
+            model
+                .supported_reasoning_levels
+                .retain(|level| !matches!(level.effort.as_str(), "" | "ultra" | "persistent"));
+        }
+        self.models
+    }
+}
+
+#[tauri::command]
+pub async fn codex_list_models(app: AppHandle) -> Result<Vec<CodexModel>, String> {
+    let client = http_client()?;
+    let response = send_codex_request(&app, &client, |auth| {
+        codex_request(client.get(format!("{CODEX_BASE}/models")), auth)
+            .query(&[("client_version", CODEX_CLIENT_VERSION)])
+            .header("Accept", "application/json")
+            .timeout(Duration::from_secs(15))
+    })
+    .await?;
+    let catalog: CodexModelCatalog = response
+        .error_for_status()
+        .map_err(|e| format!("Falha ao carregar os modelos do Codex: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Catálogo de modelos do Codex inválido: {e}"))?;
+    Ok(catalog.selectable_models())
 }
 
 /// Extrai o texto final de um corpo SSE da Responses API.
@@ -375,59 +499,29 @@ fn parse_responses_sse(body: &str) -> Result<String, String> {
     Ok(result.trim().to_string())
 }
 
-async fn call_responses(
-    client: &reqwest::Client,
-    auth: &StoredAuth,
+fn responses_payload(
     model: &str,
     prompt: &str,
-    timeout_secs: u64,
-) -> Result<String, RespErr> {
-    let mut req = client
-        .post(format!("{CODEX_BASE}/responses"))
-        .bearer_auth(&auth.access_token)
-        .header("OpenAI-Beta", "responses=experimental")
-        .header("originator", "codex_cli_rs")
-        .header("session_id", uuid::Uuid::new_v4().to_string())
-        .header("Accept", "text/event-stream")
-        .timeout(Duration::from_secs(timeout_secs));
-    if let Some(acc) = &auth.account_id {
-        req = req.header("ChatGPT-Account-ID", acc);
+    reasoning_effort: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "model": model,
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": prompt }
+                ]
+            }
+        ],
+        "stream": true,
+        "store": false,
+    });
+    if let Some(effort) = reasoning_effort.filter(|effort| !effort.is_empty()) {
+        payload["reasoning"] = serde_json::json!({ "effort": effort });
     }
-    let resp = req
-        .json(&serde_json::json!({
-            "model": model,
-            "input": [
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        { "type": "input_text", "text": prompt }
-                    ]
-                }
-            ],
-            "stream": true,
-            "store": false,
-        }))
-        .send()
-        .await
-        .map_err(|e| RespErr::Other(format!("Falha ao chamar o Codex: {e}")))?;
-
-    let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(RespErr::Unauthorized);
-    }
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(RespErr::Other(format!(
-            "Codex respondeu {status}: {}",
-            body.trim()
-        )));
-    }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| RespErr::Other(e.to_string()))?;
-    parse_responses_sse(&body).map_err(RespErr::Other)
+    payload
 }
 
 #[tauri::command]
@@ -435,44 +529,73 @@ pub async fn codex_generate(
     app: AppHandle,
     prompt: String,
     model: Option<String>,
+    reasoning_effort: Option<String>,
     timeout_secs: Option<u64>,
 ) -> Result<String, String> {
-    let mut auth = load_auth(&app)?.ok_or_else(|| {
-        "Você não está conectado ao ChatGPT. Faça login em Configuração de AIs.".to_string()
-    })?;
     let model = model
-        .map(|m| m.trim().to_string())
+        .as_deref()
+        .map(str::trim)
         .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        .unwrap_or(DEFAULT_MODEL);
+    let payload = responses_payload(model, &prompt, reasoning_effort.as_deref().map(str::trim));
     let timeout = timeout_secs.unwrap_or(300).clamp(10, 1800);
     let client = http_client()?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let response = send_codex_request(&app, &client, |auth| {
+        codex_request(client.post(format!("{CODEX_BASE}/responses")), auth)
+            .header("OpenAI-Beta", "responses=experimental")
+            .header("session_id", &session_id)
+            .header("Accept", "text/event-stream")
+            .timeout(Duration::from_secs(timeout))
+            .json(&payload)
+    })
+    .await?;
 
-    match call_responses(&client, &auth, &model, &prompt, timeout).await {
-        Ok(text) => Ok(text),
-        Err(RespErr::Other(msg)) => Err(msg),
-        Err(RespErr::Unauthorized) => {
-            // Token expirou: renova com o refresh_token e tenta de novo.
-            if auth.refresh_token.is_empty() {
-                return Err("Sessão do ChatGPT expirou. Saia e entre de novo.".to_string());
-            }
-            let refreshed = refresh_tokens(&client, &auth.refresh_token).await?;
-            auth.access_token = refreshed.access_token;
-            if !refreshed.refresh_token.is_empty() {
-                auth.refresh_token = refreshed.refresh_token;
-            }
-            if !refreshed.id_token.is_empty() {
-                auth.account_id = account_id_from_id_token(&refreshed.id_token);
-                auth.id_token = refreshed.id_token;
-            }
-            save_auth(&app, &auth)?;
-            call_responses(&client, &auth, &model, &prompt, timeout)
-                .await
-                .map_err(|e| match e {
-                    RespErr::Other(m) => m,
-                    RespErr::Unauthorized => {
-                        "Sessão do ChatGPT inválida. Saia e entre de novo.".to_string()
-                    }
-                })
-        }
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Codex respondeu {status}: {}", body.trim()));
+    }
+    let body = response.text().await.map_err(|e| e.to_string())?;
+    parse_responses_sse(&body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn catalog_lists_visible_models_in_priority_order_with_supported_efforts() {
+        let catalog: CodexModelCatalog = serde_json::from_value(json!({
+            "models": [
+                {
+                    "slug": "second", "display_name": "Second", "visibility": "list", "priority": 2,
+                    "supported_reasoning_levels": [{"effort": "low"}]
+                },
+                {
+                    "slug": "hidden", "display_name": "Hidden", "visibility": "hide", "priority": 0
+                },
+                {
+                    "slug": "first", "display_name": "First", "visibility": "list", "priority": 1,
+                    "supported_reasoning_levels": [{"effort": "high"}, {"effort": "ultra"}, {"effort": "persistent"}]
+                }
+            ]
+        })).unwrap();
+        assert_eq!(
+            serde_json::to_value(catalog.selectable_models()).unwrap(),
+            json!([
+                { "slug": "first", "displayName": "First", "supportedReasoningLevels": [{"effort": "high"}] },
+                { "slug": "second", "displayName": "Second", "supportedReasoningLevels": [{"effort": "low"}] }
+            ])
+        );
+    }
+
+    #[test]
+    fn generation_sends_selected_effort_and_defers_to_model_default_when_absent() {
+        let selected = responses_payload("test-model", "Resuma a nota.", Some("high"));
+        assert_eq!(selected["reasoning"], json!({ "effort": "high" }));
+        let default = responses_payload("test-model", "Resuma a nota.", None);
+        assert!(default.get("reasoning").is_none());
     }
 }

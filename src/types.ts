@@ -178,8 +178,9 @@ export interface AiSettings {
   /** Base da API OpenAI (default https://api.openai.com/v1). Aceita proxies/compatíveis. */
   openaiBaseUrl?: string;
 
-  // --- Codex CLI (usa a assinatura do ChatGPT via `codex login`) ---
+  // --- Codex (usa a conta do ChatGPT conectada no app) ---
   codexModel?: string;
+  codexReasoningEffort?: string;
 
   /** Prompts customizados pelo usuário (sobrescrevem os padrões). Ausente/vazio = usa o padrão. */
   prompts?: PromptOverrides;

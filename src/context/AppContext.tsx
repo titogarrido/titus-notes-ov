@@ -830,7 +830,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // --- SETTINGS / TEMPLATES ---
   const updateSettings = async (s: OllamaSettings) => {
-    await saveDatabase((prev) => ({ ...prev, settings: s }));
+    await saveDatabase((prev) => ({ ...prev, settings: s }), true);
   };
 
   const updateTranscriptionMode = async (mode: string) => {

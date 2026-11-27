@@ -6,9 +6,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { OllamaSettings } from "../types";
 import { ChatMessage, GenerateOptions, DEFAULT_TIMEOUT_MS } from "./aiCore";
 
+export const DEFAULT_CODEX_MODEL = "gpt-5";
+
 export interface CodexStatus {
   loggedIn: boolean;
   accountId?: string;
+}
+
+export interface CodexModel {
+  slug: string;
+  displayName: string;
+  supportedReasoningLevels: { effort: string }[];
 }
 
 export interface CodexDeviceStart {
@@ -36,6 +44,10 @@ export function codexAuthStatus(): Promise<CodexStatus> {
   return invoke<CodexStatus>("codex_auth_status");
 }
 
+export function codexListModels(): Promise<CodexModel[]> {
+  return invoke<CodexModel[]>("codex_list_models");
+}
+
 export async function codexLogout(): Promise<void> {
   await invoke("codex_logout");
 }
@@ -60,6 +72,7 @@ export async function generateWithCodex(
   const out = await invoke<string>("codex_generate", {
     prompt,
     model: settings.codexModel?.trim() || null,
+    reasoningEffort: settings.codexReasoningEffort?.trim() || null,
     timeoutSecs,
   });
   const text = String(out || "").trim();

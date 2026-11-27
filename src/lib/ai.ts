@@ -10,7 +10,7 @@ import {
   type ExtractedActionItem,
 } from "./ollama";
 import { generateWithOpenAI, chatWithOpenAI, pingOpenAI } from "./openai";
-import { generateWithCodex, chatWithCodex, pingCodex } from "./codex";
+import { DEFAULT_CODEX_MODEL, generateWithCodex, chatWithCodex, pingCodex } from "./codex";
 import type { ChatMessage, GenerateOptions } from "./aiCore";
 
 export type { ChatMessage, GenerateOptions } from "./aiCore";
@@ -32,7 +32,7 @@ export function activeModel(settings: OllamaSettings): string {
     case "openai":
       return settings.openaiModel?.trim() || "gpt-4o-mini";
     case "codex":
-      return settings.codexModel?.trim() || "gpt-5";
+      return settings.codexModel?.trim() || DEFAULT_CODEX_MODEL;
     default:
       return settings.model?.trim() || "llama3.2";
   }
@@ -84,7 +84,7 @@ export async function extractActionItems(
 
 /**
  * Testa o provedor ativo. Devolve a lista de modelos disponíveis (Ollama/OpenAI)
- * ou a versão do CLI (Codex), para exibir no botão "Testar conexão".
+ * ou a sessão do ChatGPT (Codex), para exibir no botão "Testar conexão".
  */
 export function pingProvider(settings: OllamaSettings): Promise<string[]> {
   switch (aiProvider(settings)) {

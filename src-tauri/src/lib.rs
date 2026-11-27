@@ -7,7 +7,8 @@ pub mod transcriber;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -167,13 +168,38 @@ pub struct UserProfile {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct OllamaSettings {
+pub struct AiSettings {
     #[serde(default)]
     pub url: String,
     #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompts: Option<PromptOverrides>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_items: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -195,7 +221,7 @@ pub struct Database {
     #[serde(default)]
     pub companies: Vec<Company>,
     #[serde(default)]
-    pub settings: OllamaSettings,
+    pub settings: AiSettings,
     #[serde(default)]
     pub templates: Vec<SummaryTemplate>,
     #[serde(default)]
@@ -296,14 +322,25 @@ fn get_db_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn write_json_atomically(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    let parent = path.parent().ok_or("Caminho de gravação inválido.")?;
+    let json = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    file.write_all(&json).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    file.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn get_initial_database() -> Database {
     // O app inicia com banco vazio; cada tela tem seu proprio empty state.
     // Mantemos apenas configuracao generica (Ollama local) e um template de
     // resumo padrao -- nenhum dado pessoal.
-    let settings = OllamaSettings {
+    let settings = AiSettings {
         url: "http://localhost:11434".to_string(),
         model: "llama3.2".to_string(),
         language: "pt-BR".to_string(),
+        ..Default::default()
     };
 
     let templates = vec![SummaryTemplate {
@@ -345,8 +382,7 @@ fn load_db(app: AppHandle) -> Result<Database, String> {
     let db_path = get_db_path(&app)?;
     if !db_path.exists() {
         let initial_db = get_initial_database();
-        let json = serde_json::to_string_pretty(&initial_db).map_err(|e| e.to_string())?;
-        fs::write(&db_path, json).map_err(|e| e.to_string())?;
+        write_json_atomically(&db_path, &initial_db)?;
         return Ok(initial_db);
     }
     let content = fs::read_to_string(&db_path).map_err(|e| e.to_string())?;
@@ -357,9 +393,7 @@ fn load_db(app: AppHandle) -> Result<Database, String> {
             let backup_path = db_path.with_extension("json.bak");
             let _ = fs::copy(&db_path, backup_path);
             let initial_db = get_initial_database();
-            if let Ok(json) = serde_json::to_string_pretty(&initial_db) {
-                let _ = fs::write(&db_path, json);
-            }
+            write_json_atomically(&db_path, &initial_db)?;
             initial_db
         }
     };
@@ -369,9 +403,7 @@ fn load_db(app: AppHandle) -> Result<Database, String> {
 #[tauri::command]
 fn save_db(app: AppHandle, data: Database) -> Result<(), String> {
     let db_path = get_db_path(&app)?;
-    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
-    fs::write(db_path, json).map_err(|e| e.to_string())?;
-    Ok(())
+    write_json_atomically(&db_path, &data)
 }
 
 #[tauri::command]
@@ -829,12 +861,25 @@ fn collect_files_recursive(
     Ok(())
 }
 
+fn read_db_for_backup(path: &Path) -> Result<Vec<u8>, String> {
+    let content = fs::read(path).map_err(|e| e.to_string())?;
+    let mut db: serde_json::Value = serde_json::from_slice(&content).map_err(|e| e.to_string())?;
+    let key = db
+        .get_mut("settings")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|settings| settings.remove("openaiApiKey"));
+    if key.is_some() {
+        serde_json::to_vec_pretty(&db).map_err(|e| e.to_string())
+    } else {
+        Ok(content)
+    }
+}
+
 fn create_backup_internal(
     app: &AppHandle,
     dest_path: &str,
     emit_progress: bool,
 ) -> Result<(), String> {
-    use std::io::Write;
     let data_root = get_data_root(app)?;
     let dest = PathBuf::from(dest_path);
 
@@ -865,7 +910,11 @@ fn create_backup_internal(
     for (idx, (rel, path)) in files.iter().enumerate() {
         zip.start_file(rel.as_str(), opts)
             .map_err(|e| e.to_string())?;
-        let content = fs::read(path).map_err(|e| e.to_string())?;
+        let content = if rel == "db.json" {
+            read_db_for_backup(path)?
+        } else {
+            fs::read(path).map_err(|e| e.to_string())?
+        };
         zip.write_all(&content).map_err(|e| e.to_string())?;
 
         if emit_progress {
@@ -1458,6 +1507,7 @@ pub fn run() {
             codex_auth::codex_login_complete,
             codex_auth::codex_auth_status,
             codex_auth::codex_logout,
+            codex_auth::codex_list_models,
             codex_auth::codex_generate
         ])
         .build(tauri::generate_context!())
@@ -1481,4 +1531,57 @@ pub fn run() {
             let _ = (app_handle, event);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn ai_settings_survive_database_save_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.json");
+        let mut input = serde_json::to_value(get_initial_database()).unwrap();
+
+        let legacy: Database = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(legacy.settings.provider, None);
+        write_json_atomically(&path, &legacy).unwrap();
+
+        input["settings"] = json!({
+            "url": "http://localhost:11434",
+            "model": "llama3.2",
+            "language": "pt-BR",
+            "provider": "codex",
+            "openaiApiKey": "test-key",
+            "openaiModel": "gpt-4o-mini",
+            "openaiBaseUrl": "https://example.com/v1",
+            "codexModel": "test-codex",
+            "codexReasoningEffort": "high",
+            "prompts": { "actionItems": "Extraia itens de ação" }
+        });
+        let saved: Database = serde_json::from_value(input.clone()).unwrap();
+        write_json_atomically(&path, &saved).unwrap();
+        let reopened: Database = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(reopened.settings).unwrap(),
+            input["settings"]
+        );
+    }
+
+    #[test]
+    fn database_backup_excludes_openai_key_and_preserves_ai_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.json");
+        let mut db = get_initial_database();
+        db.settings.provider = Some("openai".to_string());
+        db.settings.openai_api_key = Some("test-key".to_string());
+        db.settings.openai_model = Some("gpt-4o-mini".to_string());
+        write_json_atomically(&path, &db).unwrap();
+
+        let backup: Database = serde_json::from_slice(&read_db_for_backup(&path).unwrap()).unwrap();
+        assert_eq!(backup.settings.openai_api_key, None);
+        assert_eq!(backup.settings.provider, db.settings.provider);
+        assert_eq!(backup.settings.openai_model, db.settings.openai_model);
+    }
 }
