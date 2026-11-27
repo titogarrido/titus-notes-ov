@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { exit } from "@tauri-apps/plugin-process";
+import { listen } from "@tauri-apps/api/event";
 import { useApp } from "../context/AppContext";
 import {
   LayoutDashboard,
@@ -13,12 +14,75 @@ import {
   LogOut,
   Plus,
   Search,
+  Mic,
 } from "lucide-react";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { toDateOnly } from "../lib/dates";
+import { formatElapsed, RecordingStatus } from "../lib/recording";
+
+function RecordingIndicator({ recording }: { recording: RecordingStatus }) {
+  const { db, openNote } = useApp();
+  const [elapsed, setElapsed] = useState(recording.elapsedSecs);
+
+  useEffect(() => {
+    const startedAt = Date.now() - recording.elapsedSecs * 1000;
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [recording.elapsedSecs]);
+
+  const note = db.notes.find((item) => item.id === recording.noteId);
+  return (
+    <button
+      className="sidebar-recording"
+      onClick={() => openNote(recording.noteId, "transcript")}
+      disabled={!note}
+      title={recording.warning ?? "Abrir nota da gravação"}
+    >
+      <span className="sidebar-recording-heading"><Mic size={14} /> Gravando <span>{formatElapsed(elapsed)}</span></span>
+      <span className="sidebar-recording-note">{note?.title || "Gravação de reunião"}</span>
+      {!recording.systemAudio && <span className="sidebar-recording-note">Sem áudio do sistema</span>}
+    </button>
+  );
+}
 
 export const Sidebar: React.FC = () => {
-  const { currentView, setCurrentView, addNote, setSelectedEntityId, setSearchOpen, db } = useApp();
+  const {
+    currentView, setCurrentView, addNote, setSelectedEntityId,
+    setSearchOpen, db, openNote, activeRecording, prepareToExit,
+  } = useApp();
   const [confirmQuit, setConfirmQuit] = useState(false);
+  const [quitBusy, setQuitBusy] = useState(false);
+  const [quitError, setQuitError] = useState<string | null>(null);
+  const quitBusyRef = useRef(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    listen("quit-requested", () => setConfirmQuit(true)).then((release) => {
+      if (disposed) release();
+      else unlisten = release;
+    }).catch(console.error);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const handleQuit = async () => {
+    if (quitBusyRef.current) return;
+    quitBusyRef.current = true;
+    setQuitBusy(true);
+    setQuitError(null);
+    try {
+      await prepareToExit();
+      await exit(0);
+    } catch (error: unknown) {
+      setQuitError(error instanceof Error ? error.message : String(error));
+    } finally {
+      quitBusyRef.current = false;
+      setQuitBusy(false);
+    }
+  };
 
   const profileName = db.profile?.name?.trim() || "Unnamed";
   const profileAvatar = db.profile?.avatarUrl?.trim() || null;
@@ -32,12 +96,11 @@ export const Sidebar: React.FC = () => {
     const newNoteId = await addNote({
       title: "Nova Nota",
       content: "",
-      date: new Date().toISOString().split("T")[0],
+      date: toDateOnly(),
       projectId: null,
       peopleIds: [],
     });
-    setSelectedEntityId(newNoteId);
-    setCurrentView("notas");
+    openNote(newNoteId);
   };
 
   const navItems = [
@@ -122,6 +185,7 @@ export const Sidebar: React.FC = () => {
             );
           })}
         </nav>
+        {activeRecording && <RecordingIndicator key={activeRecording.filename} recording={activeRecording} />}
       </div>
 
       {/* Bottom Actions */}
@@ -142,12 +206,18 @@ export const Sidebar: React.FC = () => {
       <ConfirmDialog
         open={confirmQuit}
         title="Sair do Titus Notes?"
-        message="O aplicativo será encerrado. Suas alterações já foram salvas automaticamente."
-        confirmLabel="Sair"
-        onConfirm={() => {
-          void exit(0);
+        message={
+          quitError ? <span role="alert">Não foi possível sair com segurança. {quitError}</span>
+            : activeRecording ? "A gravação atual será finalizada e salva antes de encerrar."
+            : "As alterações pendentes serão salvas antes de encerrar."
+        }
+        confirmLabel={quitBusy ? "Finalizando…" : quitError ? "Tentar novamente" : "Salvar e sair"}
+        busy={quitBusy}
+        onConfirm={() => void handleQuit()}
+        onCancel={() => {
+          setConfirmQuit(false);
+          setQuitError(null);
         }}
-        onCancel={() => setConfirmQuit(false)}
       />
     </aside>
   );

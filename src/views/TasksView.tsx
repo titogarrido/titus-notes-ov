@@ -1,12 +1,13 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useApp } from "../context/AppContext";
-import { CheckSquare, Plus, Trash2, Check, Search, X, AlertTriangle } from "lucide-react";
+import { CheckSquare, Plus, Trash2, Check, Search, X, AlertTriangle, FileText } from "lucide-react";
 import { Task } from "../types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { TagInput } from "../components/TagInput";
 import { Combobox } from "../components/Combobox";
 import { MentionTitleInput } from "../components/MentionTitleInput";
 import { allTags } from "../lib/tags";
+import { toDateOnly } from "../lib/dates";
 
 const initialsOf = (name: string) =>
   name
@@ -31,28 +32,37 @@ const formatDateBR = (iso: string): string => {
   return `${d}/${m}/${y}`;
 };
 
-// String local YYYY-MM-DD de hoje (compara lexicograficamente == cronologicamente)
-const todayStrLocal = (): string => {
-  const t = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
-};
-
 export const TasksView: React.FC = () => {
-  const { db, addTask, updateTask, deleteTask } = useApp();
+  const { db, addTask, updateTask, deleteTask, openNote, selectedEntityId, setSelectedEntityId } = useApp();
   const titleInputRef = useRef<HTMLInputElement>(null);
-  const todayStr = todayStrLocal();
+  const selectedTaskRef = useRef<HTMLDivElement>(null);
+  const todayStr = toDateOnly();
 
   // Quick task state
   const [title, setTitle] = useState("");
-  const [dueDate, setDueDate] = useState(new Date().toISOString().split("T")[0]);
+  const [dueDate, setDueDate] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string>("");
   const [personId, setPersonId] = useState<string>("");
   const [newPeopleIds, setNewPeopleIds] = useState<string[]>([]);
   
   // Filter state — a tela principal mostra apenas pendentes; concluídas só na aba própria.
-  const [filter, setFilter] = useState<"pending" | "completed">("pending");
+  const [listFilter, setListFilter] = useState<"pending" | "completed">("pending");
+  const selectedTask = db.tasks.find((task) => task.id === selectedEntityId);
+  const filter = selectedTask ? (selectedTask.completed ? "completed" : "pending") : listFilter;
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+
+  const selectedTaskId = selectedTask?.id;
+  useLayoutEffect(() => {
+    if (!selectedTaskId) return;
+    setListFilter(filter);
+    selectedTaskRef.current?.focus({ preventScroll: true });
+    selectedTaskRef.current?.scrollIntoView({ block: "center" });
+  }, [selectedTaskId, filter]);
+
+  const selectFilter = (next: typeof listFilter) => {
+    setSelectedEntityId(null);
+    setListFilter(next);
+  };
 
   // Inline edit state
   const [inlineEdit, setInlineEdit] = useState<InlineEdit | null>(null);
@@ -126,7 +136,7 @@ export const TasksView: React.FC = () => {
     await addTask({
       title: title.trim(),
       completed: false,
-      dueDate,
+      dueDate: dueDate ?? toDateOnly(),
       projectId: projectId || null,
       personId: personId || null,
       peopleIds: newPeopleIds.length ? newPeopleIds : undefined,
@@ -154,6 +164,7 @@ export const TasksView: React.FC = () => {
   };
 
   const handleToggle = async (task: Task) => {
+    if (selectedTaskId === task.id) setSelectedEntityId(null);
     await updateTask({
       ...task,
       completed: !task.completed,
@@ -217,14 +228,14 @@ export const TasksView: React.FC = () => {
           <button
             className={`btn-secondary ${filter === "pending" ? "btn-primary" : ""}`}
             style={{ padding: "6px 12px", border: filter === "pending" ? "none" : "1px solid var(--border-color)" }}
-            onClick={() => setFilter("pending")}
+            onClick={() => selectFilter("pending")}
           >
             Pendentes ({db.tasks.filter((t) => !t.completed).length})
           </button>
           <button
             className={`btn-secondary ${filter === "completed" ? "btn-primary" : ""}`}
             style={{ padding: "6px 12px", border: filter === "completed" ? "none" : "1px solid var(--border-color)" }}
-            onClick={() => setFilter("completed")}
+            onClick={() => selectFilter("completed")}
           >
             Concluídas ({db.tasks.filter((t) => t.completed).length})
           </button>
@@ -250,7 +261,7 @@ export const TasksView: React.FC = () => {
           type="date"
           className="quick-task-select"
           style={{ width: "130px" }}
-          value={dueDate}
+          value={dueDate ?? todayStr}
           onChange={(e) => setDueDate(e.target.value)}
         />
 
@@ -343,6 +354,7 @@ export const TasksView: React.FC = () => {
           filteredTasks.map((task) => {
             const assignedPerson = db.people.find((p) => p.id === task.personId);
             const project = db.projects.find((p) => p.id === task.projectId);
+            const sourceNote = task.sourceNoteId && db.notes.find((note) => note.id === task.sourceNoteId);
             const isEditingTitle = inlineEdit?.taskId === task.id && inlineEdit.field === "title";
             const isEditingDate = inlineEdit?.taskId === task.id && inlineEdit.field === "date";
             const isEditingPerson = inlineEdit?.taskId === task.id && inlineEdit.field === "person";
@@ -357,7 +369,13 @@ export const TasksView: React.FC = () => {
             };
 
             return (
-              <div key={task.id} className="task-row">
+              <div
+                key={task.id}
+                className={`task-row${task.id === selectedTaskId ? " task-row-selected" : ""}`}
+                ref={task.id === selectedTaskId ? selectedTaskRef : undefined}
+                tabIndex={task.id === selectedTaskId ? -1 : undefined}
+                aria-label={task.id === selectedTaskId ? task.title : undefined}
+              >
                 <div className="task-row-left">
                   <button type="button" className="task-checkbox-wrapper" onClick={() => handleToggle(task)}>
                     <div className={`task-checkbox ${task.completed ? "checked" : ""}`}>
@@ -393,6 +411,17 @@ export const TasksView: React.FC = () => {
                       >
                         {task.title}
                       </span>
+                    )}
+
+                    {sourceNote && (
+                      <button
+                        type="button"
+                        className="task-source-note"
+                        onClick={() => openNote(sourceNote.id, sourceNote.transcript ? "transcript" : "content")}
+                        title={sourceNote.title || "Abrir nota de origem"}
+                      >
+                        <FileText size={12} /> <span>{sourceNote.title || "Nota de origem"}</span>
+                      </button>
                     )}
 
                     {/* Linha secundária: pessoas relacionadas (@) */}

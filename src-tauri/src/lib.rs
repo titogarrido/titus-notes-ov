@@ -120,6 +120,8 @@ pub struct Note {
     pub people_ids: Vec<String>,
     #[serde(default)]
     pub summaries: Vec<Summary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_item_drafts: Option<Vec<ActionItemDraft>>,
     #[serde(default)]
     pub transcript: String,
     /// Speaker identities and word-aligned turns for the attached recording.
@@ -140,6 +142,19 @@ pub struct Note {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct ActionItemDraft {
+    pub id: String,
+    pub include: bool,
+    pub title: String,
+    pub person_id: Option<String>,
+    #[serde(default)]
+    pub people_ids: Vec<String>,
+    pub due_date: String,
+    pub mine: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -147,6 +162,10 @@ pub struct Task {
     pub due_date: String,
     pub project_id: Option<String>,
     pub person_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_note_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub people_ids: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -1514,6 +1533,14 @@ pub fn run() {
         .expect("error while running tauri application");
 
     app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                api.prevent_exit();
+                let _ = window.show();
+                let _ = window.set_focus();
+                let _ = window.emit("quit-requested", ());
+            }
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen {
             has_visible_windows, ..
@@ -1583,5 +1610,36 @@ mod tests {
         assert_eq!(backup.settings.openai_api_key, None);
         assert_eq!(backup.settings.provider, db.settings.provider);
         assert_eq!(backup.settings.openai_model, db.settings.openai_model);
+    }
+
+    #[test]
+    fn action_drafts_and_task_origin_survive_a_database_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.json");
+        let mut input = serde_json::to_value(get_initial_database()).unwrap();
+        let drafts = json!([{
+            "id": "draft",
+            "include": false,
+            "title": "Enviar ata",
+            "personId": "ana",
+            "peopleIds": ["bia"],
+            "dueDate": "2026-11-27",
+            "mine": true
+        }]);
+        input["notes"] = json!([{
+            "id": "meeting", "title": "Reunião", "date": "2026-11-27", "content": "",
+            "projectId": null, "peopleIds": [], "actionItemDrafts": drafts
+        }]);
+        input["tasks"] = json!([{
+            "id": "task", "title": "Preparar material", "completed": false, "dueDate": "",
+            "projectId": null, "personId": null, "peopleIds": ["bia"], "sourceNoteId": "meeting"
+        }]);
+        let database: Database = serde_json::from_value(input).unwrap();
+        write_json_atomically(&path, &database).unwrap();
+        let reopened: Database = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let reopened = serde_json::to_value(reopened).unwrap();
+        assert_eq!(reopened["notes"][0]["actionItemDrafts"], drafts);
+        assert_eq!(reopened["tasks"][0]["sourceNoteId"], "meeting");
+        assert_eq!(reopened["tasks"][0]["peopleIds"], json!(["bia"]));
     }
 }

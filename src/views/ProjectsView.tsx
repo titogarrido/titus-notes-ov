@@ -32,6 +32,7 @@ import { MentionTitleInput } from "../components/MentionTitleInput";
 import { noteToPlainText } from "../lib/ollama";
 import { generateSummary, activeModel, aiProvider, activeAiLabel, PROVIDER_LABELS } from "../lib/ai";
 import { allTags } from "../lib/tags";
+import { toDateOnly } from "../lib/dates";
 import type { ProjectStatus, AIProjectSummary, Person } from "../types";
 
 // --------- helpers ---------
@@ -287,7 +288,7 @@ export const ProjectsView: React.FC = () => {
     const id = await addNote({
       title: "Nova Nota",
       content: '{"root":{"children":[{"type":"paragraph","children":[],"direction":"ltr","format":"","indent":0,"version":1}],"direction":"ltr","format":"","indent":0,"type":"root","version":1}}',
-      date: new Date().toISOString().split("T")[0],
+      date: toDateOnly(),
       projectId: selectedProject.id,
       peopleIds: [],
     });
@@ -301,7 +302,7 @@ export const ProjectsView: React.FC = () => {
     await addTask({
       title: t,
       completed: false,
-      dueDate: new Date().toISOString().split("T")[0],
+      dueDate: toDateOnly(),
       projectId: selectedProject.id,
       personId: null,
       peopleIds: peopleIds.length ? peopleIds : undefined,

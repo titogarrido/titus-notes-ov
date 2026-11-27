@@ -68,7 +68,9 @@ pub struct RecordingStatus {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingResult {
+    pub note_id: String,
     pub filename: String,
+    pub mic_filename: Option<String>,
     pub duration_secs: u64,
     pub size_bytes: u64,
 }
@@ -217,14 +219,16 @@ pub fn start_recording(
         handle,
     });
 
-    Ok(RecordingStatus {
+    let status = RecordingStatus {
         filename,
         note_id,
         elapsed_secs: 0,
         system_audio: info.system_audio,
         mic_muted: false,
         warning: info.warning,
-    })
+    };
+    let _ = app.emit("recording-started", &status);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -248,6 +252,10 @@ pub fn stop_recording(
     let path = crate::get_audio_dir(&app)?.join(&active.filename);
     let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Ok(RecordingResult {
+        note_id: active.note_id,
+        mic_filename: active
+            .system_audio
+            .then(|| mic_sidecar_name(&active.filename)),
         filename: active.filename,
         duration_secs,
         size_bytes,
@@ -269,6 +277,7 @@ pub fn cancel_recording(app: AppHandle, state: State<RecorderState>) -> Result<(
     let _ = fs::remove_file(audio_dir.join(&active.filename));
     let _ = fs::remove_file(audio_dir.join(mic_sidecar_name(&active.filename)));
     let _ = fs::remove_file(audio_dir.join(sys_sidecar_name(&active.filename)));
+    let _ = app.emit("recording-cancelled", &active.filename);
     Ok(())
 }
 

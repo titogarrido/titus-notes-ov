@@ -8,6 +8,8 @@ import { Summary, SummaryTemplate, OllamaSettings, Diarization } from "../types"
 import { DiarizationControl } from "./DiarizationControl";
 import { SummariesPanel } from "./SummariesPanel";
 import { ActionItemsPanel } from "./ActionItemsPanel";
+import { toDateOnly } from "../lib/dates";
+import { formatElapsed, RecordingStatus } from "../lib/recording";
 import { NoteSidePanel } from "./lexical/NoteSidePanel";
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
@@ -582,28 +584,11 @@ const ImportAudioControl: React.FC<{
 // mp3 via evento global `recording-finished` tratado no AppContext — este
 // componente só comanda start/stop e reflete o estado.
 
-interface BackendRecordingStatus {
-  filename: string;
-  noteId: string;
-  elapsedSecs: number;
-  systemAudio: boolean;
-  micMuted: boolean;
-  warning: string | null;
-}
-
 import {
   AUTO_STOP_STORAGE_KEY,
   AUTO_STOP_OPTIONS,
   loadAutoStopSecs,
 } from "../lib/recorderPrefs";
-
-function formatElapsed(total: number): string {
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
 
 // Evento DOM local para o MeetingRecorder e o indicador da barra de abas se
 // manterem em sincronia sem compartilhar estado React (cada um re-renderiza
@@ -621,7 +606,7 @@ const RecordingTabControl: React.FC<{
   hideStart?: boolean;
   onOpenTranscript?: () => void;
 }> = ({ noteId, hideStart, onOpenTranscript }) => {
-  const { db } = useApp();
+  const { db, stopRecording } = useApp();
   const [state, setState] = useState<"idle" | "mine" | "other" | "busy">("idle");
   const [elapsed, setElapsed] = useState(0);
   const [micMuted, setMicMuted] = useState(false);
@@ -631,7 +616,7 @@ const RecordingTabControl: React.FC<{
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(() => {
-    invoke<BackendRecordingStatus | null>("recording_status")
+    invoke<RecordingStatus | null>("recording_status")
       .then((s) => {
         if (!s) {
           setMicMuted(false);
@@ -768,7 +753,7 @@ const RecordingTabControl: React.FC<{
               className="recording-tab-stop"
               title="Parar e salvar a gravação"
               onClick={() => {
-                invoke("stop_recording")
+                stopRecording()
                   .catch(() => {})
                   .finally(notifyRecordingChanged);
               }}
@@ -816,7 +801,7 @@ const RecordingTabControl: React.FC<{
 };
 
 const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
-  const { db } = useApp();
+  const { db, stopRecording } = useApp();
   const [state, setState] = useState<"idle" | "recording" | "other" | "busy">("idle");
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
@@ -834,7 +819,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
   // usuário trocar de aba/nota e voltar.
   useEffect(() => {
     let cancelled = false;
-    invoke<BackendRecordingStatus | null>("recording_status")
+    invoke<RecordingStatus | null>("recording_status")
       .then((s) => {
         if (cancelled || !s) return;
         setElapsed(s.elapsedSecs);
@@ -853,7 +838,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
   // (botão da barra de abas, atalho ⌘⇧R) com este componente já montado.
   useEffect(() => {
     const sync = () => {
-      invoke<BackendRecordingStatus | null>("recording_status")
+      invoke<RecordingStatus | null>("recording_status")
         .then((s) => {
           if (!s) {
             setMicMuted(false);
@@ -939,7 +924,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
     setSavedNotice(null);
     setState("busy");
     try {
-      const status = await invoke<BackendRecordingStatus>("start_recording", {
+      const status = await invoke<RecordingStatus>("start_recording", {
         noteId,
         autoStopSecs,
         systemAudio: true,
@@ -963,7 +948,7 @@ const MeetingRecorder: React.FC<{ noteId: string }> = ({ noteId }) => {
   const stopAndSave = async () => {
     setState("busy");
     try {
-      await invoke("stop_recording");
+      await stopRecording();
       setState("idle");
     } catch (e: any) {
       // Pode já ter sido finalizada pelo auto-stop — o evento cuida do resto
@@ -1243,16 +1228,6 @@ function countWords(value: string): number {
   }
 }
 
-function relativeTime(d: Date | null): string {
-  if (!d) return "—";
-  const diff = Math.round((Date.now() - d.getTime()) / 1000);
-  if (diff < 5) return "agora";
-  if (diff < 60) return `há ${diff}s`;
-  if (diff < 3600) return `há ${Math.round(diff / 60)} min`;
-  if (diff < 86400) return `há ${Math.round(diff / 3600)} h`;
-  return d.toLocaleDateString("pt-BR");
-}
-
 export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   value,
   onChange,
@@ -1367,16 +1342,6 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     // Identity results are persisted globally even when the panel was unmounted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diarization]);
-  // Guarda em ref para NÃO causar re-render a cada keystroke (isso quebrava o
-  // plugin de menção "@" que recebia novas referências de props e resetava
-  // o estado interno). O display é atualizado por um tick.
-  const lastSavedAtRef = useRef<Date | null>(null);
-  const [, setTick] = useState(0);
-
-  React.useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 30_000);
-    return () => clearInterval(id);
-  }, []);
 
   // memoiza derivações pesadas
   const headings = useMemo(() => extractHeadings(value), [value]);
@@ -1464,34 +1429,20 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   // Helper: gera sugestões de data baseado na query
   const buildDateSuggestions = useCallback((query: string) => {
     const today = new Date();
-    const fmt = (d: Date) =>
-      d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
-    const items: { value: string; id: string; kind: string; sub: string }[] = [
-      {
-        value: fmt(today),
-        id: today.toISOString().slice(0, 10),
+    const items = [
+      { days: 0, sub: "Hoje" },
+      { days: 1, sub: "Amanhã" },
+      { days: 7, sub: "Em 7 dias" },
+      { days: 30, sub: "Em 30 dias" },
+    ].map(({ days, sub }) => {
+      const date = new Date(today.getFullYear(), today.getMonth(), today.getDate() + days);
+      return {
+        value: date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" }),
+        id: toDateOnly(date),
         kind: "date",
-        sub: "Hoje",
-      },
-      {
-        value: fmt(new Date(today.getTime() + 86400000)),
-        id: new Date(today.getTime() + 86400000).toISOString().slice(0, 10),
-        kind: "date",
-        sub: "Amanhã",
-      },
-      {
-        value: fmt(new Date(today.getTime() + 7 * 86400000)),
-        id: new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10),
-        kind: "date",
-        sub: "Em 7 dias",
-      },
-      {
-        value: fmt(new Date(today.getTime() + 30 * 86400000)),
-        id: new Date(today.getTime() + 30 * 86400000).toISOString().slice(0, 10),
-        kind: "date",
-        sub: "Em 30 dias",
-      },
-    ];
+        sub,
+      };
+    });
     const q = (query || "").toLowerCase();
     if (!q) return items;
     return items.filter(
@@ -1549,7 +1500,6 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       void root.getTextContent();
       const json = JSON.stringify(editorState.toJSON());
       onChangeRef.current(json);
-      lastSavedAtRef.current = new Date();
     });
   }, []);
 
@@ -1848,13 +1798,6 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
           {/* Footer com métricas */}
           <div className="editor-footer">
-            <span className="editor-footer-saved">
-              <span className="editor-footer-dot" />
-              {lastSavedAtRef.current
-                ? `Salvo ${relativeTime(lastSavedAtRef.current)}`
-                : "Aguardando edição"}
-            </span>
-            <span>·</span>
             <span>{wordCount.toLocaleString("pt-BR")} palavras</span>
             <span>·</span>
             <span>{readingMinutes} min de leitura</span>

@@ -8,6 +8,7 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -19,24 +20,25 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   confirmLabel = "Confirmar",
   cancelLabel = "Cancelar",
   danger = false,
+  busy = false,
   onConfirm,
   onCancel,
 }) => {
   useEffect(() => {
-    if (!open) return;
+    if (!open || busy) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
       if (e.key === "Enter") onConfirm();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, onCancel, onConfirm]);
+  }, [open, busy, onCancel, onConfirm]);
 
   if (!open) return null;
 
   return (
     <div
-      onClick={onCancel}
+      onClick={busy ? undefined : onCancel}
       style={{
         position: "fixed",
         inset: 0,
@@ -52,6 +54,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-busy={busy}
         style={{
           background: "white",
           borderRadius: "12px",
@@ -101,7 +104,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             marginTop: "20px",
           }}
         >
-          <button className="btn-secondary" onClick={onCancel}>
+          <button className="btn-secondary" onClick={onCancel} disabled={busy}>
             {cancelLabel}
           </button>
           <button
@@ -112,6 +115,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
                 : undefined
             }
             onClick={onConfirm}
+            disabled={busy}
             autoFocus
           >
             {confirmLabel}

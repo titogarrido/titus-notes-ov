@@ -1,4 +1,5 @@
 import { ImportedHyprnoteSession, Note, Summary } from "../types";
+import { toDateOnly } from "./dates";
 
 // ---------- Frontmatter (YAML simples) ----------
 
@@ -533,7 +534,7 @@ export function convertSession(
   // 2. fallback: nome da pasta
   let id = session.folderName;
   let title = "Nota importada";
-  let date = new Date().toISOString().slice(0, 10);
+  let date = toDateOnly();
 
   if (session.metaJson) {
     try {
@@ -542,7 +543,9 @@ export function convertSession(
       if (typeof meta.title === "string" && meta.title.trim()) title = meta.title.trim();
       if (typeof meta.created_at === "string") {
         const d = new Date(meta.created_at);
-        if (!isNaN(d.getTime())) date = d.toISOString().slice(0, 10);
+        if (!isNaN(d.getTime())) {
+          date = /^\d{4}-\d{2}-\d{2}$/.test(meta.created_at) ? meta.created_at : toDateOnly(d);
+        }
       }
     } catch (e: any) {
       debug?.warnings.push(`_meta.json inválido: ${e?.message || e}`);

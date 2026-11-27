@@ -31,6 +31,7 @@ import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { check as checkUpdate, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { toDateOnly } from "../lib/dates";
 import {
   OllamaSettings,
   AiProvider,
@@ -86,6 +87,7 @@ export const SettingsView: React.FC = () => {
     deleteTemplate,
     setHyprnotePath,
     reloadDb,
+    prepareToExit,
     updateProfile,
     updateS3Schedule,
     updateS3Retention,
@@ -550,7 +552,7 @@ export const SettingsView: React.FC = () => {
   const handleBackup = async () => {
     setBackupStatus({ kind: "loading" });
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = toDateOnly();
       const dest = await dialogSave({
         defaultPath: `titus-notes-backup-${today}.zip`,
         filters: [{ name: "Backup", extensions: ["zip"] }],
@@ -983,6 +985,7 @@ export const SettingsView: React.FC = () => {
           setUpdateStatus({ kind: "ready", version: update.version });
         }
       });
+      await prepareToExit();
       await relaunch();
     } catch (e: any) {
       setUpdateStatus({ kind: "error", message: e?.message || String(e) });

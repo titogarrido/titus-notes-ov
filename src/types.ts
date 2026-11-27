@@ -99,6 +99,7 @@ export interface Note {
   projectId: string | null;
   peopleIds: string[];
   summaries?: Summary[];
+  actionItemDrafts?: ActionItemDraft[] | null;
   transcript?: string;
   /** Identidades locais a esta gravação e texto alinhado por palavra. */
   diarization?: Diarization | null;
@@ -110,6 +111,16 @@ export interface Note {
   micFile?: string;
   /** Tags livres para organização transversal. */
   tags?: string[];
+}
+
+export interface ActionItemDraft {
+  id: string;
+  include: boolean;
+  title: string;
+  personId: string | null;
+  peopleIds: string[];
+  dueDate: string;
+  mine: boolean;
 }
 
 export interface VoiceSignature {
@@ -210,6 +221,7 @@ export interface Task {
   dueDate: string;
   projectId: string | null;
   personId: string | null;
+  sourceNoteId?: string | null;
   /** Pessoas relacionadas à tarefa, adicionadas via @menção no título. */
   peopleIds?: string[];
   /** Tags livres para organização transversal. */

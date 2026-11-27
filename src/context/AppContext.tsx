@@ -14,6 +14,7 @@ import {
   DataRootInfo,
   ImportedHyprnoteSession,
   AudioCleanupResult,
+  ActionItemDraft,
   Diarization,
   VoiceSignature,
 } from "../types";
@@ -21,11 +22,18 @@ import { renderDiarizedTranscript, renderSelfTranscript } from "../lib/diarizati
 import { enrollVoiceProfile, matchVoiceProfiles, validVoiceSignature } from "../lib/voiceProfiles";
 import { buildImportReport, ImportReport } from "../lib/hyprnoteImport";
 import { loadAutoStopSecs } from "../lib/recorderPrefs";
+import { toDateOnly } from "../lib/dates";
+import { RecordingAttachment, RecordingStatus } from "../lib/recording";
+import { approveActionItems } from "../lib/actionItems";
 
 export interface MeetingPrompt {
   appName: string;
   bundleId: string;
 }
+
+type SaveStatus =
+  | { kind: "saving" | "saved" }
+  | { kind: "error"; message: string };
 
 const DEFAULT_SETTINGS: OllamaSettings = {
   url: "http://localhost:11434",
@@ -112,14 +120,27 @@ interface AppContextType {
   // Termo buscado, para rolar/realçar até a ocorrência na aba de destino.
   pendingNoteQuery: string | null;
   setPendingNoteQuery: (q: string | null) => void;
+  openNote: (id: string, tab?: "content" | "transcript" | "summaries" | "actions") => void;
 
   // Detecção de reunião (app externo usando o microfone)
   meetingPrompt: MeetingPrompt | null;
   acceptMeetingRecording: () => Promise<void>;
   dismissMeetingPrompt: () => void;
+  activeRecording: RecordingStatus | null;
 
   // Database CRUD Actions
   saveDatabase: (mutator: (prev: Database) => Database) => Promise<void>;
+  saveStatus: SaveStatus;
+  queueNoteFields: (noteId: string, fields: Partial<Note>) => void;
+  getPendingNoteFields: (noteId: string) => Partial<Note> | undefined;
+  flushNoteEdits: () => void;
+  flushWorkspace: () => Promise<void>;
+  prepareToExit: () => Promise<void>;
+  stopRecording: () => Promise<void>;
+  extractingActionNotes: ReadonlySet<string>;
+  extractActionDrafts: (noteId: string, generate: () => Promise<ActionItemDraft[]>) => Promise<number>;
+  updateActionDrafts: (noteId: string, update: (drafts: ActionItemDraft[]) => ActionItemDraft[]) => void;
+  createTasksFromDrafts: (noteId: string, draftIds: string[]) => Promise<Task[]>;
   
   addCompany: (company: Omit<Company, "id">) => Promise<string>;
   updateCompany: (company: Company) => Promise<void>;
@@ -140,6 +161,7 @@ interface AppContextType {
   patchNote: (
     id: string,
     fields: Partial<Note> | ((old: Note) => Partial<Note>),
+    reportFailure?: boolean,
   ) => Promise<void>;
   deleteNote: (id: string) => Promise<void>;
   
@@ -184,6 +206,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     templates: [],
   });
   const dbRef = useRef(db);
+  const savedDbRef = useRef(db);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveFailedRef = useRef(false);
+  const [databaseSaveStatus, setDatabaseSaveStatus] = useState<SaveStatus>({ kind: "saved" });
+  const pendingNoteEditsRef = useRef(new Map<string, Partial<Note>>());
+  const noteEditsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [hasPendingNoteEdits, setHasPendingNoteEdits] = useState(false);
+  const actionExtractionsRef = useRef(new Set<string>());
+  const [extractingActionNotes, setExtractingActionNotes] = useState<ReadonlySet<string>>(new Set());
   const [loading, setLoading] = useState<boolean>(true);
   const [currentView, setCurrentView] = useState<string>("painel");
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
@@ -193,6 +224,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Id da nota sendo transcrita ao vivo (null = nenhuma).
   const [liveTranscribingNoteId, setLiveNoteId] = useState<string | null>(null);
   const [dataRoot, setDataRootState] = useState<DataRootInfo | null>(null);
+
+  const openNote: AppContextType["openNote"] = (id, tab) => {
+    setPendingNoteTab(tab ?? null);
+    setPendingNoteQuery(null);
+    setSelectedEntityId(id);
+    setCurrentView("notas");
+  };
 
   // Load database from Rust on mount
   useEffect(() => {
@@ -204,6 +242,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           invoke<DataRootInfo>("get_data_root_info").catch(() => null),
         ]);
         dbRef.current = data;
+        savedDbRef.current = data;
         setDb(data);
         if (info) setDataRootState(info);
       } catch (err) {
@@ -281,36 +320,146 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     path: string | null,
     migrate: boolean,
   ): Promise<DataRootInfo> => {
+    await flushWorkspace();
     const info = await invoke<DataRootInfo>("set_data_root", { path, migrate });
     setDataRootState(info);
     const data = await invoke<Database>("load_db");
     dbRef.current = data;
+    savedDbRef.current = data;
     setDb(data);
     return info;
   };
 
-  // Save database helper — serializa as gravações via fila para evitar
-  // que duas invocações concorrentes terminem em ordem trocada no Rust
-  // (o que pode "ressuscitar" uma nota deletada).
-  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const saveDatabase = async (mutator: (prev: Database) => Database, strict = false) => {
-    // Compute before scheduling React's render: background identity events and
-    // manual edits can otherwise persist an undefined/stale snapshot.
+  // Grava snapshots em ordem e confirma somente o último. Uma gravação posterior
+  // bem-sucedida também inclui as alterações anteriores que ficaram em memória.
+  const persistDatabase = (snapshot: Database, rollbackTo?: Database) => {
+    saveFailedRef.current = false;
+    setDatabaseSaveStatus({ kind: "saving" });
+    const next = saveQueueRef.current.catch(() => undefined).then(async () => {
+      await invoke("save_db", { data: snapshot });
+      savedDbRef.current = snapshot;
+    });
+    saveQueueRef.current = next;
+    void next.then(
+      () => {
+        if (saveQueueRef.current !== next) return;
+        saveFailedRef.current = false;
+        setDatabaseSaveStatus({ kind: "saved" });
+      },
+      (error: unknown) => {
+        console.error("Erro ao salvar o banco de dados:", error);
+        if (rollbackTo && dbRef.current === snapshot) {
+          dbRef.current = rollbackTo;
+          setDb(rollbackTo);
+        }
+        if (saveQueueRef.current !== next) return;
+        saveFailedRef.current = dbRef.current !== savedDbRef.current;
+        const message = error instanceof Error ? error.message : String(error);
+        setDatabaseSaveStatus(saveFailedRef.current ? { kind: "error", message } : { kind: "saved" });
+      },
+    );
+    return next;
+  };
+
+  const saveDatabase = async (
+    mutator: (prev: Database) => Database,
+    mode: "ignore" | "report" | "rollback" = "ignore",
+  ) => {
     const previousDb = dbRef.current;
-    const computed = mutator(previousDb);
-    dbRef.current = computed;
-    setDb(computed);
-    const next = saveQueueRef.current.catch(() => undefined)
-      .then(() => invoke("save_db", { data: computed }))
-      .then(() => undefined);
-    saveQueueRef.current = next.catch((err) => { console.error("Erro ao salvar o banco de dados:", err); });
-    if (strict) {
-      try { await next; }
-      catch (error) {
-        if (dbRef.current === computed) { dbRef.current = previousDb; setDb(previousDb); }
-        throw error;
+    const snapshot = mutator(previousDb);
+    if (snapshot === previousDb) return;
+    dbRef.current = snapshot;
+    setDb(snapshot);
+    const write = persistDatabase(snapshot, mode === "rollback" ? previousDb : undefined);
+    if (mode === "ignore") await write.catch(() => undefined);
+    else await write;
+  };
+
+  const getPendingNoteFields = (id: string) => pendingNoteEditsRef.current.get(id);
+
+  const flushNoteEdits = () => {
+    if (noteEditsTimerRef.current !== null) {
+      clearTimeout(noteEditsTimerRef.current);
+      noteEditsTimerRef.current = null;
+    }
+    const pending = pendingNoteEditsRef.current;
+    if (!pending.size) return;
+    pendingNoteEditsRef.current = new Map();
+    setHasPendingNoteEdits(false);
+    for (const [id, fields] of pending) void patchNote(id, fields);
+  };
+
+  const queueNoteFields = (id: string, fields: Partial<Note>) => {
+    pendingNoteEditsRef.current.set(id, { ...getPendingNoteFields(id), ...fields });
+    setHasPendingNoteEdits(true);
+    if (noteEditsTimerRef.current !== null) clearTimeout(noteEditsTimerRef.current);
+    noteEditsTimerRef.current = setTimeout(flushNoteEdits, 700);
+  };
+
+  const flushWorkspace = async () => {
+    const beforeFlush = saveQueueRef.current;
+    flushNoteEdits();
+    if (saveFailedRef.current && saveQueueRef.current === beforeFlush) {
+      // Reenvia o snapshot mais recente, incluindo alterações que falharam.
+      persistDatabase(dbRef.current);
+    }
+    while (true) {
+      const write = saveQueueRef.current;
+      try {
+        await write;
+      } catch (error) {
+        if (write === saveQueueRef.current && dbRef.current !== savedDbRef.current) throw error;
       }
-    } else await saveQueueRef.current;
+      flushNoteEdits();
+      if (write === saveQueueRef.current) return;
+    }
+  };
+
+  const updateActionDrafts: AppContextType["updateActionDrafts"] = (noteId, update) => {
+    const note = dbRef.current.notes.find((item) => item.id === noteId);
+    if (!note) return;
+    const pending = getPendingNoteFields(noteId)?.actionItemDrafts;
+    const drafts = (pending !== undefined ? pending : note.actionItemDrafts) ?? [];
+    queueNoteFields(noteId, { actionItemDrafts: update(drafts) });
+  };
+
+  const extractActionDrafts: AppContextType["extractActionDrafts"] = async (noteId, generate) => {
+    const active = actionExtractionsRef.current;
+    if (active.has(noteId)) return 0;
+    active.add(noteId);
+    setExtractingActionNotes(new Set(active));
+    try {
+      const generated = await generate();
+      let added = 0;
+      updateActionDrafts(noteId, (drafts) => {
+        const created = dbRef.current.tasks.filter((task) => task.sourceNoteId === noteId);
+        const knownTitles = new Set([...drafts, ...created].map((item) => item.title.trim().toLowerCase()));
+        const fresh = generated.filter((item) => {
+          const title = item.title.trim().toLowerCase();
+          if (!title || knownTitles.has(title)) return false;
+          knownTitles.add(title);
+          return true;
+        });
+        added = fresh.length;
+        return [...drafts, ...fresh];
+      });
+      await flushWorkspace();
+      return added;
+    } finally {
+      active.delete(noteId);
+      setExtractingActionNotes(new Set(active));
+    }
+  };
+
+  const createTasksFromDrafts: AppContextType["createTasksFromDrafts"] = async (noteId, draftIds) => {
+    flushNoteEdits();
+    let created: Task[] = [];
+    await saveDatabase((prev) => {
+      const result = approveActionItems(prev, noteId, draftIds);
+      created = result.tasks;
+      return result.database;
+    }, "rollback");
+    return created;
   };
 
   // --- Detecção de reunião: app externo começou/parou de usar o microfone ---
@@ -318,6 +467,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // abre o microfone, e `meeting-ended` quando solta. Aqui oferecemos a
   // gravação via banner; o encerramento da gravação em si é feito no backend.
   const [meetingPrompt, setMeetingPrompt] = useState<MeetingPrompt | null>(null);
+  const [activeRecording, setActiveRecording] = useState<RecordingStatus | null>(null);
+  const stoppingRecordingRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -358,14 +509,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!prompt) return;
     setMeetingPrompt(null);
     const now = new Date();
-    const dateOnly = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
-      now.getDate(),
-    ).padStart(2, "0")}`;
     const time = now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
     const id = await addNote({
       title: `Reunião ${prompt.appName} — ${time}`,
       content: "",
-      date: dateOnly,
+      date: toDateOnly(now),
       projectId: null,
       peopleIds: [],
     });
@@ -385,52 +533,81 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // --- Gravação de reunião: fonte única de verdade para anexar o áudio ---
-  // O backend emite `recording-finished` tanto no stop manual quanto no
-  // auto-stop por silêncio — assim a nota recebe o mp3 mesmo que o usuário
-  // esteja em outra tela (ou em outra nota) quando a gravação termina.
+  const attachRecording = async ({ noteId, filename, micFilename }: RecordingAttachment) => {
+    let previousAudio = "";
+    await saveDatabase((prev) => {
+      const note = prev.notes.find((item) => item.id === noteId);
+      if (!note || note.audioFile === filename) return prev;
+      const oldAudio = note.audioFile;
+      if (oldAudio && !prev.notes.some((item) => item.id !== noteId && item.audioFile === oldAudio)) {
+        previousAudio = oldAudio;
+      }
+      return {
+        ...prev,
+        notes: prev.notes.map((item) => item.id === noteId ? {
+          ...item,
+          audioFile: filename,
+          micFile: micFilename || "",
+          diarization: null,
+          selfTranscript: "",
+          updatedAt: new Date().toISOString(),
+        } : item),
+      };
+    }, "report");
+    if (previousAudio && !dbRef.current.notes.some((item) => item.audioFile === previousAudio)) {
+      await invoke("delete_audios", { filenames: [previousAudio] }).catch((error) => {
+        console.error("Erro ao remover áudio antigo:", error);
+      });
+    }
+  };
+
+  const stopRecording = () => {
+    if (stoppingRecordingRef.current) return stoppingRecordingRef.current;
+    const operation = invoke<RecordingAttachment>("stop_recording")
+      .then(attachRecording)
+      .finally(() => { stoppingRecordingRef.current = null; });
+    stoppingRecordingRef.current = operation;
+    return operation;
+  };
+
+  const prepareToExit = async () => {
+    await flushWorkspace();
+    const status = await invoke<RecordingStatus | null>("recording_status");
+    if (status || stoppingRecordingRef.current) await stopRecording();
+    await flushWorkspace();
+  };
+
+  // Persiste o áudio mesmo que a nota esteja fechada quando a captura termina.
   useEffect(() => {
     let disposed = false;
+    let revision = 0;
     const unlisteners: (() => void)[] = [];
-    listen<{ noteId: string; filename: string; micFilename?: string | null; reason: string }>(
-      "recording-finished",
-      async (e) => {
-        const { noteId, filename, micFilename } = e.payload;
-        let oldAudio = "";
-        let oldAudioUsedElsewhere = false;
-        await saveDatabase((prev) => {
-          const target = prev.notes.find((n) => n.id === noteId);
-          oldAudio = target?.audioFile || "";
-          oldAudioUsedElsewhere = prev.notes.some(
-            (n) => n.id !== noteId && n.audioFile === oldAudio,
-          );
-          return {
-            ...prev,
-            notes: prev.notes.map((n) =>
-              n.id === noteId
-                ? {
-                    ...n,
-                    audioFile: filename,
-                    micFile: micFilename || "",
-                    diarization: null,
-                    selfTranscript: "",
-                    updatedAt: new Date().toISOString(),
-                  }
-                : n,
-            ),
-          };
-        });
-        if (oldAudio && oldAudio !== filename && !oldAudioUsedElsewhere) {
-          try {
-            await invoke("delete_audios", { filenames: [oldAudio] });
-          } catch (err) {
-            console.error("Erro ao remover áudio antigo:", err);
-          }
-        }
-      },
-    ).then((u) => {
-      if (disposed) u();
-      else unlisteners.push(u);
-    });
+    const track = (listener: Promise<() => void>) =>
+      listener.then((unlisten) => {
+        if (disposed) unlisten();
+        else unlisteners.push(unlisten);
+      });
+    const refresh = async () => {
+      const request = ++revision;
+      const status = await invoke<RecordingStatus | null>("recording_status");
+      if (!disposed && request === revision) setActiveRecording(status);
+    };
+    Promise.all([
+      track(listen<RecordingStatus>("recording-started", ({ payload }) => {
+        revision++;
+        setActiveRecording(payload);
+      })),
+      track(listen<RecordingAttachment>("recording-finished", ({ payload }) => {
+        revision++;
+        setActiveRecording((current) => current?.filename === payload.filename ? null : current);
+        void attachRecording(payload).catch(() => undefined);
+      })),
+      track(listen<string>("recording-cancelled", ({ payload }) => {
+        revision++;
+        setActiveRecording((current) => current?.filename === payload ? null : current);
+      })),
+      track(listen("recording-error", () => void refresh().catch(console.error))),
+    ]).then(refresh).catch((error) => console.error("Falha ao acompanhar gravações:", error));
     return () => {
       disposed = true;
       unlisteners.forEach((u) => u());
@@ -625,14 +802,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       noteId, filename, speakerId, turns: note.diarization.turns,
     });
     await saveDatabase((prev) => prev.people.find((p) => p.id === personId)?.voiceProfile !== profileAtStart
-      ? prev : enrollVoiceProfile(prev, noteId, filename, speakerId, personId, signature, new Date().toISOString()), true);
+      ? prev : enrollVoiceProfile(prev, noteId, filename, speakerId, personId, signature, new Date().toISOString()), "rollback");
   };
   const removeVoiceProfile = async (personId: string) => {
     await saveDatabase((prev) => ({ ...prev,
       people: prev.people.map((p) => p.id === personId ? { ...p, voiceProfile: null } : p),
       notes: prev.notes.map((n) => n.diarization ? { ...n, diarization: { ...n.diarization, speakers: n.diarization.speakers.map((speaker) => speaker.personId === personId || speaker.voiceMatch?.personId === personId
         ? { ...speaker, voiceSignature: null, voiceMatch: null } : speaker) } } : n),
-    }), true);
+    }), "rollback");
   };
 
   const deletePerson = async (id: string) => {
@@ -737,11 +914,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const patchNote = async (
     id: string,
     fields: Partial<Note> | ((old: Note) => Partial<Note>),
+    reportFailure = false,
   ) => {
     let oldNote: Note | undefined;
     let merged: Note | undefined;
     let nextNotesSnapshot: Note[] = [];
-    await saveDatabase((prev) => {
+    const write = saveDatabase((prev) => {
       oldNote = prev.notes.find((n) => n.id === id);
       if (!oldNote) return prev;
       const patch = typeof fields === "function" ? fields(oldNote) : fields;
@@ -754,7 +932,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         notes: nextNotes,
         projects: recomputeProjectPeople(prev.projects, nextNotes, affectedProjects),
       };
-    });
+    }, "report");
+    try {
+      await write;
+    } catch (error) {
+      // As mudanças permanecem em memória. A próxima gravação ou tentativa
+      // manual usa o snapshot mais recente. Preserve os anexos no disco.
+      if (reportFailure) throw error;
+      return;
+    }
 
     // Limpeza de imagens órfãs só quando o conteúdo mudou.
     if (oldNote && merged && merged.content !== oldNote.content) {
@@ -772,7 +958,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteNote = async (id: string) => {
     let note: Note | undefined;
     let nextNotesSnapshot: Note[] = [];
-    await saveDatabase((prev) => {
+    const write = saveDatabase((prev) => {
       note = prev.notes.find((n) => n.id === id);
       const nextNotes = prev.notes.filter((n) => n.id !== id);
       nextNotesSnapshot = nextNotes;
@@ -781,7 +967,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         notes: nextNotes,
         projects: recomputeProjectPeople(prev.projects, nextNotes, [note?.projectId]),
       };
-    });
+    }, "report");
+    try {
+      await write;
+    } catch {
+      return;
+    }
 
     if (note) {
       const imagesInNote = extractImageFilenames(note.content);
@@ -830,7 +1021,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // --- SETTINGS / TEMPLATES ---
   const updateSettings = async (s: OllamaSettings) => {
-    await saveDatabase((prev) => ({ ...prev, settings: s }), true);
+    await saveDatabase((prev) => ({ ...prev, settings: s }), "rollback");
   };
 
   const updateTranscriptionMode = async (mode: string) => {
@@ -1091,6 +1282,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const data = await invoke<Database>("load_db");
       dbRef.current = data;
+      savedDbRef.current = data;
       setDb(data);
     } catch (err) {
       console.error("Erro ao recarregar o banco de dados:", err);
@@ -1111,7 +1303,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (old) {
           if (old.projectId) affectedProjects.add(old.projectId);
           if (n.projectId) affectedProjects.add(n.projectId);
-          map.set(n.id, n);
+          // A importação substitui dados externos. Os rascunhos são locais e
+          // podem ter mudado enquanto arquivos estavam sendo copiados.
+          map.set(n.id, { ...n, actionItemDrafts: old.actionItemDrafts });
         } else {
           if (n.projectId) affectedProjects.add(n.projectId);
           newOnes.push(n);
@@ -1139,6 +1333,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentView,
         setCurrentView,
         meetingPrompt,
+        activeRecording,
         acceptMeetingRecording,
         dismissMeetingPrompt,
         selectedEntityId,
@@ -1149,7 +1344,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setPendingNoteTab,
         pendingNoteQuery,
         setPendingNoteQuery,
+        openNote,
         saveDatabase,
+        saveStatus: hasPendingNoteEdits && databaseSaveStatus.kind !== "error"
+          ? { kind: "saving" }
+          : databaseSaveStatus,
+        queueNoteFields,
+        getPendingNoteFields,
+        flushNoteEdits,
+        flushWorkspace,
+        prepareToExit,
+        stopRecording,
+        extractingActionNotes,
+        extractActionDrafts,
+        updateActionDrafts,
+        createTasksFromDrafts,
         addCompany,
         updateCompany,
         deleteCompany,

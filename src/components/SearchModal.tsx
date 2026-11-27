@@ -202,7 +202,7 @@ export const SearchModal: React.FC = () => {
     ...filteredNotes.map((m) => ({ view: "notas", id: m.note.id, tab: m.tab })),
     ...filteredProjects.map((p) => ({ view: "projetos", id: p.id })),
     ...filteredPeople.map((p) => ({ view: "pessoas", id: p.id })),
-    ...filteredTasks.map(() => ({ view: "tarefas", id: null })),
+    ...filteredTasks.map((t) => ({ view: "tarefas", id: t.id })),
   ];
   const notesOffset = 0;
   const projectsOffset = filteredNotes.length;
@@ -366,7 +366,7 @@ export const SearchModal: React.FC = () => {
                 <button
                   key={task.id}
                   className="search-result-item"
-                  onClick={() => handleSelect("tarefas", null)}
+                  onClick={() => handleSelect("tarefas", task.id)}
                   {...activeProps(tasksOffset + i)}
                 >
                   <CheckSquare size={14} className="search-result-icon" />

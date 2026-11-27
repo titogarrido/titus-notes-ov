@@ -542,20 +542,6 @@
   flex-shrink: 0;
 }
 
-.editor-footer-saved {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.editor-footer-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
-}
-
 /* ----- Note side panel ----- */
 .note-side-panel {
   width: 280px;

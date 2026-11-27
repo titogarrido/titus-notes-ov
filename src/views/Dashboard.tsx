@@ -10,20 +10,17 @@ import {
   Mic,
   Volume2,
   Sparkles,
+  Captions,
+  ListChecks,
+  ChevronRight,
   Check,
   Calendar,
   AlertTriangle,
 } from "lucide-react";
 import { Note } from "../types";
+import { toDateOnly } from "../lib/dates";
 
 // --- helpers ---
-
-const toDateOnly = (d: Date) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-};
 
 const parseLocal = (iso: string) => {
   const [y, m, d] = iso.split("-").map(Number);
@@ -104,6 +101,8 @@ export const Dashboard: React.FC = () => {
     db,
     setCurrentView,
     setSelectedEntityId,
+    openNote,
+    activeRecording,
     updateTask,
     addNote,
     addTask,
@@ -111,7 +110,6 @@ export const Dashboard: React.FC = () => {
   } = useApp();
 
   const today = new Date();
-  const todayStr = toDateOnly(today);
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
   // Saudação
@@ -182,7 +180,7 @@ export const Dashboard: React.FC = () => {
       const id = await addNote({
         title: text,
         content: "",
-        date: todayStr,
+        date: toDateOnly(),
         projectId: quickProjectId || null,
         peopleIds: [],
       });
@@ -195,7 +193,7 @@ export const Dashboard: React.FC = () => {
       await addTask({
         title: text,
         completed: false,
-        dueDate: todayStr,
+        dueDate: toDateOnly(),
         projectId: quickProjectId || null,
         personId: null,
       });
@@ -281,9 +279,8 @@ export const Dashboard: React.FC = () => {
 
   // ----- Notas recentes (por última edição; cai para a data da reunião) -----
   const noteRecency = (n: Note) => n.updatedAt || n.date || "";
-  const recentNotes = [...db.notes]
-    .sort((a, b) => noteRecency(b).localeCompare(noteRecency(a)))
-    .slice(0, 3);
+  const notesByRecency = [...db.notes].sort((a, b) => noteRecency(b).localeCompare(noteRecency(a)));
+  const recentNotes = notesByRecency.slice(0, 3);
 
   // ----- Pessoas recentes (por data de cadastro; o id é `person-<timestamp>`) -----
   const personCreatedAt = (id: string) => {
@@ -295,10 +292,7 @@ export const Dashboard: React.FC = () => {
     .slice(0, 5);
 
   // ----- handlers -----
-  const goToNote = (id: string) => {
-    setSelectedEntityId(id);
-    setCurrentView("notas");
-  };
+  const goToNote = (id: string) => openNote(id);
   const goToProject = (id: string) => {
     setSelectedEntityId(id);
     setCurrentView("projetos");
@@ -1052,6 +1046,8 @@ export const Dashboard: React.FC = () => {
             </div>
           </div>
 
+          <MeetingReview notes={notesByRecency} activeNoteId={activeRecording?.noteId} onOpen={openNote} />
+
           {/* NOTAS RECENTES */}
           <div>
             <div
@@ -1173,6 +1169,65 @@ export const Dashboard: React.FC = () => {
 };
 
 export default Dashboard;
+
+const reviewStages = {
+  transcript: { label: "Transcrever áudio", Icon: Captions },
+  summaries: { label: "Gerar sumário", Icon: Sparkles },
+  actions: { label: "Revisar itens de ação", Icon: ListChecks },
+} as const;
+
+function MeetingReview({
+  notes,
+  activeNoteId,
+  onOpen,
+}: {
+  notes: Note[];
+  activeNoteId?: string;
+  onOpen: (id: string, tab: keyof typeof reviewStages) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const reviews = notes.flatMap((note): { note: Note; tab: keyof typeof reviewStages }[] => {
+    if (note.id === activeNoteId) return [];
+    const hasTranscript = !!note.transcript?.trim();
+    if (note.audioFile && !hasTranscript) return [{ note, tab: "transcript" }];
+    if (hasTranscript && !note.summaries?.some((summary) => summary.content.trim())) {
+      return [{ note, tab: "summaries" }];
+    }
+    if (note.actionItemDrafts?.length) return [{ note, tab: "actions" }];
+    return [];
+  });
+  if (!reviews.length) return null;
+
+  return (
+    <section aria-labelledby="meeting-review-title">
+      <h2 className="section-title meeting-review-title" id="meeting-review-title">
+        <ListChecks size={16} /> Reuniões para revisar
+      </h2>
+      <ul className="meeting-review-list">
+        {(expanded ? reviews : reviews.slice(0, 4)).map(({ note, tab }) => {
+          const { label, Icon } = reviewStages[tab];
+          return (
+            <li key={note.id}>
+              <button type="button" className="meeting-review-item" onClick={() => onOpen(note.id, tab)}>
+                <Icon size={15} />
+                <span>
+                  <strong>{note.title || "Sem título"}</strong>
+                  <small>{label}</small>
+                </span>
+                <ChevronRight size={14} />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {reviews.length > 4 && (
+        <button className="btn-secondary meeting-review-more" onClick={() => setExpanded((value) => !value)}>
+          {expanded ? "Mostrar menos" : `Ver todas (${reviews.length})`}
+        </button>
+      )}
+    </section>
+  );
+}
 
 // ---------- Stat link (números clicáveis do cabeçalho) ----------
 

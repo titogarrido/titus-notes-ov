@@ -28,15 +28,9 @@ import { ParticipantsField } from "../components/ParticipantsField";
 import { Combobox } from "../components/Combobox";
 import { allTags, normalizeTag } from "../lib/tags";
 import { renderSelfTranscript } from "../lib/diarization";
+import { toDateOnly } from "../lib/dates";
 
 // ---------- helpers ----------
-
-const toDateOnly = (d: Date) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-};
 
 const parseLocal = (iso: string) => {
   const [y, m, d] = (iso || "").split("-").map(Number);
@@ -64,7 +58,7 @@ const bucketFor = (iso: string, today: Date): string => {
   if (isNaN(d.getTime())) return "Sem data";
   const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const diff = daysBetween(d, start);
-  if (diff >= 0) return "Próximas";
+  if (diff > 0) return "Próximas";
   if (diff === -1 || diff === 0) return "Hoje & ontem";
   if (diff >= -7) return "Últimos 7 dias";
   if (diff >= -30) return "Últimos 30 dias";
@@ -128,6 +122,11 @@ export const NotesView: React.FC = () => {
     setPendingNoteTab,
     pendingNoteQuery,
     setPendingNoteQuery,
+    saveStatus,
+    queueNoteFields,
+    getPendingNoteFields,
+    flushNoteEdits,
+    flushWorkspace,
   } = useApp();
 
   // Aba + termo pedidos pela busca (ex.: match na transcrição) são consumidos
@@ -153,7 +152,6 @@ export const NotesView: React.FC = () => {
   const [filterProjectId, setFilterProjectId] = useState<string>("__all");
   const [filterTags, setFilterTags] = useState<string[]>([]); // normalizados (interseção)
   const [justCreatedId, setJustCreatedId] = useState<string | null>(null);
-  const [savedNotice, setSavedNotice] = useState(false);
   const viewContainerRef = useRef<HTMLDivElement>(null);
   const listScrollTopRef = useRef(0);
   const restoreListScrollRef = useRef(false);
@@ -234,46 +232,15 @@ export const NotesView: React.FC = () => {
     commitNoteFields({ projectId: projId || null });
   };
 
-  // --- Persistência com debounce de conteúdo/transcrição ---
-  // Salvar a cada keystroke serializava o banco INTEIRO via IPC + escrevia o
-  // db.json completo em disco, e o setDb re-renderizava o app todo — o editor
-  // travava visivelmente (pior ainda durante uma gravação). O Lexical/textarea
-  // guardam o próprio estado, então o db pode ficar ~700 ms atrás sem efeito
-  // visível. O flush acontece no timer, ao trocar de nota, ao desmontar e
-  // quando a janela perde o foco.
+  // O editor mantém sua entrada local. O AppContext guarda as alterações
+  // pendentes para poder gravá-las também ao sair ou trocar de tela.
   const dbRef = useRef(db);
   dbRef.current = db;
-  const patchNoteRef = useRef(patchNote);
-  patchNoteRef.current = patchNote;
-  const pendingFieldsRef = useRef<{ noteId: string; fields: Partial<Note> } | null>(null);
-  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const flushPendingFields = async () => {
-    if (pendingTimerRef.current) {
-      clearTimeout(pendingTimerRef.current);
-      pendingTimerRef.current = null;
-    }
-    const pending = pendingFieldsRef.current;
-    pendingFieldsRef.current = null;
-    if (!pending) return;
-    // Aplica só os campos pendentes sobre o estado fresco (evita sobrescrever
-    // mudanças concorrentes como uma transcrição recém-salva).
-    await patchNoteRef.current(pending.noteId, pending.fields);
-  };
-  const flushRef = useRef(flushPendingFields);
-  flushRef.current = flushPendingFields;
-
-  const queueNoteFields = (noteId: string, fields: Partial<Note>) => {
-    if (pendingFieldsRef.current && pendingFieldsRef.current.noteId !== noteId) {
-      void flushRef.current();
-    }
-    pendingFieldsRef.current = {
-      noteId,
-      fields: { ...pendingFieldsRef.current?.fields, ...fields },
-    };
-    if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
-    pendingTimerRef.current = setTimeout(() => void flushRef.current(), 700);
-  };
+  const flushEditsRef = useRef(flushNoteEdits);
+  flushEditsRef.current = flushNoteEdits;
+  const flushWorkspaceRef = useRef(flushWorkspace);
+  flushWorkspaceRef.current = flushWorkspace;
+  const retrySave = () => void flushWorkspaceRef.current().catch(() => undefined);
 
   // Mudanças discretas (data, projeto, pessoas) devem salvar IMEDIATAMENTE.
   // Passam pelo mesmo buffer para serem mescladas com conteúdo/título ainda
@@ -281,19 +248,19 @@ export const NotesView: React.FC = () => {
   const commitNoteFields = (fields: Partial<Note>) => {
     if (!selectedEntityId) return;
     queueNoteFields(selectedEntityId, fields);
-    void flushRef.current();
+    flushNoteEdits();
   };
 
   // Flush ao trocar de nota e ao desmontar a view
   useEffect(() => {
     return () => {
-      void flushRef.current();
+      flushEditsRef.current();
     };
   }, [selectedEntityId]);
 
   // Flush quando a janela perde o foco (minimiza perda ao fechar o app)
   useEffect(() => {
-    const onBlur = () => void flushRef.current();
+    const onBlur = () => flushEditsRef.current();
     window.addEventListener("blur", onBlur);
     return () => window.removeEventListener("blur", onBlur);
   }, []);
@@ -304,9 +271,7 @@ export const NotesView: React.FC = () => {
       if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
         if (!selectedEntityId) return;
         e.preventDefault();
-        void flushRef.current();
-        setSavedNotice(true);
-        window.setTimeout(() => setSavedNotice(false), 1500);
+        retrySave();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -324,7 +289,8 @@ export const NotesView: React.FC = () => {
   const [titleDraft, setTitleDraft] = useState("");
   useEffect(() => {
     const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
-    setTitleDraft(note?.title ?? "");
+    const pendingTitle = selectedEntityId ? getPendingNoteFields(selectedEntityId)?.title : undefined;
+    setTitleDraft(pendingTitle ?? note?.title ?? "");
   }, [selectedEntityId]);
 
   const handleTitleChange = (newTitle: string) => {
@@ -337,7 +303,7 @@ export const NotesView: React.FC = () => {
     if (!selectedEntityId) return;
     // Usa a nota mais fresca (inclui qualquer alteração de pessoas já em buffer)
     const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
-    const base = pendingFieldsRef.current?.fields.peopleIds ?? note?.peopleIds;
+    const base = getPendingNoteFields(selectedEntityId)?.peopleIds ?? note?.peopleIds;
     if (!base) return;
     const isTagged = base.includes(personId);
     const newPeopleIds = isTagged
@@ -361,7 +327,7 @@ export const NotesView: React.FC = () => {
       isContact: true,
     });
     const note = dbRef.current.notes.find((n) => n.id === selectedEntityId);
-    const base = pendingFieldsRef.current?.fields.peopleIds ?? note?.peopleIds ?? [];
+    const base = getPendingNoteFields(selectedEntityId)?.peopleIds ?? note?.peopleIds ?? [];
     if (!base.includes(newId)) {
       commitNoteFields({ peopleIds: [...base, newId] });
     }
@@ -835,7 +801,7 @@ export const NotesView: React.FC = () => {
                           <div className="note-row-left">
                             <span className="note-row-title">{note.title || "Sem título"}</span>
                             <div className="note-row-meta">
-                              <span title={new Date(note.date).toLocaleDateString("pt-BR")}>
+                              <span title={parseLocal(note.date).toLocaleDateString("pt-BR")}>
                                 {relativeDate(note.date, today)}
                               </span>
                               {project && (
@@ -995,20 +961,14 @@ export const NotesView: React.FC = () => {
                   placeholder="Título da nota..."
                 />
               </div>
-              {savedNotice && (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 4,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    color: "#1f8e3d",
-                    flexShrink: 0,
-                    marginRight: 4,
-                  }}
-                >
-                  <Check size={14} /> Salvo
+              {saveStatus.kind === "error" ? (
+                <span className="note-save-status note-save-error" role="alert" title={saveStatus.message}>
+                  Falha ao salvar
+                  <button className="btn-secondary" onClick={retrySave}>Tentar novamente</button>
+                </span>
+              ) : (
+                <span className={`note-save-status note-save-${saveStatus.kind}`} role="status">
+                  {saveStatus.kind === "saving" ? "Salvando…" : <><Check size={14} /> Salvo</>}
                 </span>
               )}
               <button
@@ -1121,10 +1081,10 @@ export const NotesView: React.FC = () => {
                 transcript={selectedNote.transcript || ""}
                 diarization={selectedNote.diarization}
                 notePeopleIds={selectedNote.peopleIds}
-                onBeforeAudioProcess={() => flushRef.current()}
+                onBeforeAudioProcess={flushWorkspace}
                 onDiarizationChange={async (diarization, transcript, selfText) => {
                   // Flush pending textarea edits before applying the renamed headers.
-                  await flushRef.current();
+                  await flushWorkspace();
                   await patchNote(selectedNote.id, (old) => ({
                     diarization,
                     transcript,
@@ -1152,7 +1112,7 @@ export const NotesView: React.FC = () => {
                     micFile: "",
                     selfTranscript: "",
                     diarization: null,
-                  });
+                  }, true);
                   // Remove o áudio antigo se nenhuma outra nota o usa.
                   const stale = [old, oldMic].filter(
                     (f) =>

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useReducer, useState } from "react";
 import {
   ListChecks,
   Sparkles,
@@ -11,7 +11,7 @@ import {
   UserCheck,
   Wand2,
 } from "lucide-react";
-import { OllamaSettings, Summary } from "../types";
+import { ActionItemDraft, OllamaSettings, Summary, Task } from "../types";
 import {
   buildActionItemsPrompt,
   noteToPlainText,
@@ -20,6 +20,7 @@ import {
 import { extractActionItems } from "../lib/ai";
 import { MentionTitleInput } from "./MentionTitleInput";
 import { useApp } from "../context/AppContext";
+import { toDateOnly } from "../lib/dates";
 
 const initialsOf = (name: string) =>
   name.split(" ").filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase() || "").join("");
@@ -33,24 +34,7 @@ interface ActionItemsPanelProps {
   settings: OllamaSettings;
 }
 
-interface DraftItem {
-  id: string;
-  include: boolean;
-  title: string;
-  personId: string | null;
-  /** Pessoas relacionadas via @menção no título. */
-  peopleIds: string[];
-  dueDate: string;
-  /** A IA marcou como sua tarefa. */
-  mine: boolean;
-}
-
-const todayISO = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate(),
-  ).padStart(2, "0")}`;
-};
+const draftId = () => `action-${crypto.getRandomValues(new Uint32Array(4)).join("-")}`;
 
 export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
   noteId,
@@ -60,16 +44,27 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
   summaries,
   settings,
 }) => {
-  const { db, addTask, setCurrentView } = useApp();
+  const {
+    db, setCurrentView, setSelectedEntityId, getPendingNoteFields, extractingActionNotes,
+    extractActionDrafts, updateActionDrafts, createTasksFromDrafts,
+  } = useApp();
   const note = db.notes.find((n) => n.id === noteId);
   const projectId = note?.projectId ?? null;
-  const selfTranscript = note?.selfTranscript || "";
+  const pending = getPendingNoteFields(noteId);
+  const selfTranscript = pending?.selfTranscript ?? note?.selfTranscript ?? "";
+  const sourceContent = pending?.content ?? noteContent;
+  const sourceTranscript = pending?.transcript ?? transcript;
 
-  const [extracting, setExtracting] = useState(false);
+  const extracting = extractingActionNotes.has(noteId);
   const [error, setError] = useState<string | null>(null);
-  const [items, setItems] = useState<DraftItem[] | null>(null);
+  const items = pending?.actionItemDrafts !== undefined
+    ? pending.actionItemDrafts
+    : note?.actionItemDrafts ?? null;
+  // O buffer no AppContext persiste entre abas. Este render local só atualiza
+  // o formulário enquanto a gravação no banco aguarda o debounce.
+  const [, renderDrafts] = useReducer((version: number) => version + 1, 0);
   const [creating, setCreating] = useState(false);
-  const [createdCount, setCreatedCount] = useState<number | null>(null);
+  const [createdTasks, setCreatedTasks] = useState<Task[]>([]);
   const [onlyMine, setOnlyMine] = useState(false);
   // Instruções livres para guiar/filtrar a extração (opcional)
   const [customOpen, setCustomOpen] = useState(false);
@@ -112,75 +107,73 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
   }, [db.people]);
 
   const hasSource = useMemo(() => {
-    const plain = noteToPlainText(noteContent).trim();
+    const plain = noteToPlainText(sourceContent).trim();
     return (
       plain.length > 0 ||
-      (transcript || "").trim().length > 0 ||
+      (sourceTranscript || "").trim().length > 0 ||
       selfTranscript.trim().length > 0 ||
       summaries.some((s) => s.content?.trim())
     );
-  }, [noteContent, transcript, selfTranscript, summaries]);
+  }, [sourceContent, sourceTranscript, selfTranscript, summaries]);
 
   const handleExtract = async () => {
     setError(null);
-    setCreatedCount(null);
-    setExtracting(true);
+    setCreatedTasks([]);
     try {
-      const plain = noteToPlainText(noteContent);
-      const prompt = buildActionItemsPrompt(
-        noteTitle,
-        plain,
-        settings.language || "pt-BR",
-        transcript,
-        summaries.map((s) => s.content),
-        todayISO(),
-        db.people.map((p) => p.name),
-        me,
-        selfTranscript,
-        customInstructions,
-        settings.prompts?.actionItems,
-      );
-      const extracted = await extractActionItems(settings, prompt);
-      const drafts: DraftItem[] = extracted.map((e, i) => {
-        const mine = e.owner === "me";
-        return {
-          id: `ai-${Date.now()}-${i}`,
-          include: true,
-          title: e.title,
-          personId: resolvePersonId(e.assignee) ?? (mine ? selfPersonId : null),
-          peopleIds: [],
-          dueDate: e.due || "",
-          mine,
-        };
+      const added = await extractActionDrafts(noteId, async () => {
+        const latest = getPendingNoteFields(noteId);
+        const prompt = buildActionItemsPrompt(
+          latest?.title ?? noteTitle,
+          noteToPlainText(latest?.content ?? sourceContent),
+          settings.language || "pt-BR",
+          latest?.transcript ?? sourceTranscript,
+          summaries.map((s) => s.content),
+          toDateOnly(),
+          db.people.map((p) => p.name),
+          me,
+          latest?.selfTranscript ?? selfTranscript,
+          customInstructions,
+          settings.prompts?.actionItems,
+        );
+        const extracted = await extractActionItems(settings, prompt);
+        const drafts: ActionItemDraft[] = extracted.map((item) => {
+          const mine = item.owner === "me";
+          return {
+            id: draftId(),
+            include: true,
+            title: item.title,
+            personId: resolvePersonId(item.assignee) ?? (mine ? selfPersonId : null),
+            peopleIds: [],
+            dueDate: item.due || "",
+            mine,
+          };
+        });
+        return drafts.sort((a, b) => Number(b.mine) - Number(a.mine));
       });
-      // Meus itens primeiro.
-      drafts.sort((a, b) => Number(b.mine) - Number(a.mine));
-      setItems(drafts);
-      if (drafts.length === 0) {
-        setError("A IA não encontrou itens de ação nesta nota.");
-      }
+      if (added === 0) setError("A IA não encontrou novos itens de ação nesta nota.");
     } catch (e: any) {
       setError(e?.message || String(e));
-    } finally {
-      setExtracting(false);
     }
   };
 
-  const patchItem = (id: string, patch: Partial<DraftItem>) => {
-    setItems((prev) =>
-      prev ? prev.map((it) => (it.id === id ? { ...it, ...patch } : it)) : prev,
-    );
+  const editDrafts = (update: (drafts: ActionItemDraft[]) => ActionItemDraft[]) => {
+    updateActionDrafts(noteId, update);
+    renderDrafts();
+  };
+
+  const patchItem = (id: string, patch: Partial<ActionItemDraft>) => {
+    editDrafts((drafts) => drafts.map((item) => item.id === id ? { ...item, ...patch } : item));
   };
 
   const removeItem = (id: string) => {
-    setItems((prev) => (prev ? prev.filter((it) => it.id !== id) : prev));
+    editDrafts((drafts) => drafts.filter((item) => item.id !== id));
   };
 
   const addBlankItem = () => {
-    setItems((prev) => [
-      ...(prev || []),
+    editDrafts((drafts) => [
+      ...drafts,
       {
-        id: `manual-${Date.now()}`,
+        id: draftId(),
         include: true,
         title: "",
         personId: null,
@@ -200,26 +193,9 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
   const handleCreate = async () => {
     if (selected.length === 0) return;
     setCreating(true);
+    setError(null);
     try {
-      const createdIds = new Set<string>();
-      for (const it of selected) {
-        await addTask({
-          title: it.title.trim(),
-          completed: false,
-          dueDate: it.dueDate || "",
-          projectId,
-          personId: it.personId,
-          peopleIds: it.peopleIds.length ? it.peopleIds : undefined,
-        });
-        createdIds.add(it.id);
-      }
-      setCreatedCount(createdIds.size);
-      // Remove só os criados — preserva os demais (ex.: itens de outras pessoas
-      // quando o filtro "Somente meus" está ativo), permitindo criar em etapas.
-      setItems((prev) => {
-        const rest = (prev || []).filter((it) => !createdIds.has(it.id));
-        return rest.length ? rest : null;
-      });
+      setCreatedTasks(await createTasksFromDrafts(noteId, selected.map((item) => item.id)));
     } catch (e: any) {
       setError(e?.message || String(e));
     } finally {
@@ -268,13 +244,13 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
           </button>
           <button
             className="btn-primary"
-            disabled={extracting || !hasSource}
+            disabled={extracting || creating || !hasSource}
             onClick={handleExtract}
             style={{ display: "flex", alignItems: "center", gap: "6px" }}
             title={!hasSource ? "A nota não tem conteúdo, transcrição ou sumário." : ""}
           >
             {extracting ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
-            <span>{extracting ? "Extraindo..." : items ? "Extrair de novo" : "Extrair com IA"}</span>
+            <span>{extracting ? "Extraindo..." : items ? "Buscar mais itens" : "Extrair com IA"}</span>
           </button>
         </div>
       </div>
@@ -366,7 +342,7 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
         </div>
       )}
 
-      {createdCount !== null && (
+      {createdTasks.length > 0 && (
         <div
           style={{
             padding: "12px 14px",
@@ -383,11 +359,14 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
           }}
         >
           <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <Check size={15} /> {createdCount} tarefa(s) criada(s).
+            <Check size={15} /> {createdTasks.length === 1 ? "1 tarefa criada." : `${createdTasks.length} tarefas criadas.`}
           </span>
           <button
             type="button"
-            onClick={() => setCurrentView("tarefas")}
+            onClick={() => {
+              setSelectedEntityId(createdTasks.length === 1 ? createdTasks[0].id : null);
+              setCurrentView("tarefas");
+            }}
             style={{
               display: "flex",
               alignItems: "center",
@@ -400,13 +379,13 @@ export const ActionItemsPanel: React.FC<ActionItemsPanelProps> = ({
               cursor: "pointer",
             }}
           >
-            Ver tarefas <ArrowRight size={13} />
+            {createdTasks.length === 1 ? "Ver tarefa" : "Ver tarefas"} <ArrowRight size={13} />
           </button>
         </div>
       )}
 
       {items === null ? (
-        createdCount === null && (
+        createdTasks.length === 0 && (
           <div
             style={{
               padding: "40px 20px",

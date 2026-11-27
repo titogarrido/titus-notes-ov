@@ -82,7 +82,7 @@ const MeetingBanner: React.FC = () => {
 };
 
 const MainLayout: React.FC = () => {
-  const { currentView, loading } = useApp();
+  const { currentView, loading, db, selectedEntityId, saveStatus, flushWorkspace } = useApp();
 
   if (loading) {
     return (
@@ -152,7 +152,18 @@ const MainLayout: React.FC = () => {
       <Sidebar />
 
       {/* Main content wrapper */}
-      <main className="main-content">{renderView()}</main>
+      <main className="main-content">
+        {saveStatus.kind === "error" &&
+          (currentView !== "notas" || !db.notes.some((note) => note.id === selectedEntityId)) && (
+            <div className="save-failure-notice" role="alert">
+              <span>Falha ao salvar alterações. {saveStatus.message}</span>
+              <button className="btn-secondary" onClick={() => void flushWorkspace().catch(() => undefined)}>
+                Tentar novamente
+              </button>
+            </div>
+          )}
+        {renderView()}
+      </main>
 
       {/* Spotlight Global Search Modal overlay */}
       <SearchModal />

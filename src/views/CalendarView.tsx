@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
+import { toDateOnly } from "../lib/dates";
 import {
   Calendar,
   ChevronLeft,
@@ -22,6 +23,7 @@ export const CalendarView: React.FC = () => {
   const [newTaskTitle, setNewTaskTitle] = useState("");
 
   const today = new Date();
+  const todayKey = toDateOnly(today);
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const [currentDate, setCurrentDate] = useState(
     new Date(today.getFullYear(), today.getMonth(), 1),
@@ -53,8 +55,7 @@ export const CalendarView: React.FC = () => {
   // Pad trailing cells to complete the final week (keeps grid heights consistent)
   while (dayCells.length % 7 !== 0) dayCells.push(null);
 
-  const fmtDay = (day: number) =>
-    `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const fmtDay = (day: number) => toDateOnly(new Date(year, month, day));
 
   const showNotes = filter === "all" || filter === "notes";
   const showTasks = filter === "all" || filter === "tasks" || filter === "open-tasks";
@@ -81,19 +82,19 @@ export const CalendarView: React.FC = () => {
       (t) =>
         !t.completed &&
         t.dueDate &&
-        new Date(t.dueDate) < startOfToday &&
+        t.dueDate < todayKey &&
         (t.dueDate || "").startsWith(prefix),
     ).length;
     return { notes, tasks: tasksInMonth.length, openTasks, overdueTasks };
-  }, [db.notes, db.tasks, year, month, startOfToday]);
+  }, [db.notes, db.tasks, year, month, todayKey]);
 
   const handleNoteClick = (id: string) => {
     setSelectedEntityId(id);
     setCurrentView("notas");
   };
 
-  const handleTaskClick = () => {
-    setSelectedEntityId(null);
+  const handleTaskClick = (id: string) => {
+    setSelectedEntityId(id);
     setCurrentView("tarefas");
   };
 
@@ -383,7 +384,7 @@ export const CalendarView: React.FC = () => {
                         key={`t-${it.id}`}
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleTaskClick();
+                          handleTaskClick(it.id);
                         }}
                         style={{
                           display: "flex",
@@ -569,9 +570,9 @@ export const CalendarView: React.FC = () => {
                       </button>
                     ))}
                     {dayTasks.map((t) => {
-                      const overdue = !t.completed && new Date(t.dueDate) < startOfToday;
+                      const overdue = !t.completed && t.dueDate < todayKey;
                       return (
-                        <button key={t.id} onClick={handleTaskClick} style={dayItemStyle}>
+                        <button key={t.id} onClick={() => handleTaskClick(t.id)} style={dayItemStyle}>
                           {overdue ? (
                             <AlertTriangle size={14} style={{ color: "#cf222e", flexShrink: 0 }} />
                           ) : (
